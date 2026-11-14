@@ -13,6 +13,9 @@ using ChessLAN.Models;
 using ChessLAN.Controls;
 using ChessLAN.Views;
 using ChessDotNet;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 
 namespace ChessLAN;
 
@@ -42,18 +45,40 @@ public partial class MainWindow : Window
         try
         {
             _roomCancellation = new CancellationTokenSource(); _network = CreateNetwork(); _isHost = true;
+            var lanAddresses=GetLanIpv4Addresses();
+            RoomHintText.Text=lanAddresses.Length == 0
+                ? "Không tìm thấy IPv4 LAN. Hãy kiểm tra Wi‑Fi/Ethernet đang bật. Cổng TCP: " + PortBox.Text
+                : $"IP LAN của máy tạo phòng: {string.Join(", ",lanAddresses)}\nMáy kia nhập một IP này và cổng {PortBox.Text}. Không dùng 127.0.0.1 khi chơi giữa hai máy.";
             SetWaiting(true, $"Đang chờ đối thủ · cổng {PortBox.Text}");
             await _network.HostAsync(int.Parse(PortBox.Text), NicknameBox.Text, _roomCancellation.Token);
             SetWaiting(false, "Đối thủ đã kết nối · chờ xác nhận");
         }
         catch (OperationCanceledException) { SetWaiting(false, "Đã hủy tạo phòng"); }
+        catch (SocketException ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
         catch (Exception ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
     }
     private async void Join_Click(object sender, RoutedEventArgs e)
     {
         try { SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
+        catch (SocketException ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
         catch (Exception ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
     }
+    private static string[] GetLanIpv4Addresses() => NetworkInterface.GetAllNetworkInterfaces()
+        .Where(adapter => adapter.OperationalStatus == OperationalStatus.Up && adapter.NetworkInterfaceType is NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.Ethernet)
+        .SelectMany(adapter => adapter.GetIPProperties().UnicastAddresses)
+        .Select(info => info.Address)
+        .Where(address => address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address) && !address.ToString().StartsWith("169.254.", StringComparison.Ordinal))
+        .Distinct()
+        .Select(address => address.ToString())
+        .ToArray();
+    private static string ExplainSocketError(SocketException ex) => ex.SocketErrorCode switch
+    {
+        SocketError.AddressAlreadyInUse => $"Cổng TCP đã được dùng. Hãy đổi cổng khác.\n\n{ex.Message}",
+        SocketError.ConnectionRefused => $"Máy chủ từ chối kết nối. Kiểm tra máy kia đã bấm Tạo phòng và hai bên dùng cùng cổng chưa.\n\n{ex.Message}",
+        SocketError.TimedOut => $"Kết nối hết thời gian chờ. Kiểm tra IP LAN, Windows Firewall và chế độ cô lập thiết bị Wi‑Fi (AP/client isolation).\n\n{ex.Message}",
+        SocketError.NetworkUnreachable or SocketError.HostUnreachable => $"Không tới được máy chủ. Hai máy cần nằm trong mạng có thể liên lạc trực tiếp.\n\n{ex.Message}",
+        _ => ex.Message
+    };
     private void Cancel_Click(object sender, RoutedEventArgs e) { _roomCancellation?.Cancel(); _ = _network?.DisposeAsync(); }
     private void SetWaiting(bool waiting, string text)
     {
