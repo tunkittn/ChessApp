@@ -145,6 +145,9 @@ public partial class MainWindow : Window
     {
         Board.Children.Clear();
         var kingToTilt = _gameOver && _rules.IsCheckmate ? FindKingSquare(_rules.Game.WhoseTurn) : null;
+        var kingInCheck = _rules.Game.IsInCheck(_rules.Game.WhoseTurn)
+            ? FindKingSquare(_rules.Game.WhoseTurn)
+            : null;
         for(int row=0;row<8;row++) for(int col=0;col<8;col++)
         {
             var file=(char)('a'+col); var rank=8-row; var square=$"{file}{rank}";
@@ -175,7 +178,9 @@ public partial class MainWindow : Window
             }
             var lightSquare=(row+col)%2==0;
             var squareColor=lightSquare?Color.FromRgb(238,238,210):Color.FromRgb(118,150,86);
-            var background=_selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
+            var background=square==kingInCheck
+                ? new SolidColorBrush(Color.FromRgb(205,72,67))
+                : _selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
             var b=new Button{Style=(Style)FindResource("SquareButton"),Content=content,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=background,Tag=square};
             b.Click+=Square_Click; Board.Children.Add(b);
         }
