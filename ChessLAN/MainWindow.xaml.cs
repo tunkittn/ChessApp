@@ -10,6 +10,8 @@ using System.Windows.Navigation;
 using System.Windows.Shapes;
 using ChessLAN.Services;
 using ChessLAN.Models;
+using ChessLAN.Controls;
+using ChessLAN.Views;
 using ChessDotNet;
 
 namespace ChessLAN;
@@ -137,27 +139,20 @@ public partial class MainWindow : Window
         var winner=result.Contains("Đen thắng",StringComparison.Ordinal) ? "Đen thắng" : result.Contains("Trắng thắng",StringComparison.Ordinal) ? "Trắng thắng" : "Hòa cờ";
         StatusText.Text=isCheckmate ? $"CHECKMATE · {winner}" : result;
         StatusDot.Fill=new SolidColorBrush(isCheckmate ? Color.FromRgb(235,112,94) : Color.FromRgb(129,182,76));
+        if (isCheckmate) DrawBoard();
     }
     private void DrawBoard()
     {
         Board.Children.Clear();
+        var kingToTilt = _gameOver && _rules.IsCheckmate ? FindKingSquare(_rules.Game.WhoseTurn) : null;
         for(int row=0;row<8;row++) for(int col=0;col<8;col++)
         {
             var file=(char)('a'+col); var rank=8-row; var square=$"{file}{rank}";
-            var piece=_rules.PieceAt(square);
-            var isWhite=piece.Length>0 && char.IsUpper(_rules.Game.GetPieceAt(new ChessDotNet.Position(square)).GetFenCharacter());
-            var glyph=new TextBlock
-            {
-                Text=piece, FontFamily=new FontFamily("Segoe UI Symbol"), FontSize=60,
-                FontWeight=FontWeights.Normal, HorizontalAlignment=HorizontalAlignment.Center,
-                VerticalAlignment=VerticalAlignment.Center, TextAlignment=TextAlignment.Center,
-                Foreground=isWhite ? new SolidColorBrush(Color.FromRgb(255,253,236)) : new SolidColorBrush(Color.FromRgb(25,29,27)),
-                Effect=isWhite ? new System.Windows.Media.Effects.DropShadowEffect { Color=Color.FromRgb(30,37,25), BlurRadius=0, ShadowDepth=1, Opacity=0.9 } : null
-            };
+            var piece=_rules.Game.GetPieceAt(new Position(square));
             var content = new Grid();
             if (_legalTargets.Contains(square))
             {
-                var occupied = _rules.Game.GetPieceAt(new Position(square)) is not null;
+                var occupied = piece is not null;
                 content.Children.Add(new Ellipse
                 {
                     Width=occupied ? 48 : 16, Height=occupied ? 48 : 16,
@@ -168,7 +163,16 @@ public partial class MainWindow : Window
                     IsHitTestVisible=false
                 });
             }
-            content.Children.Add(glyph);
+            if (piece is not null)
+            {
+                var visual = new ChessPieceVisual(piece.GetFenCharacter())
+                {
+                    Width=58, Height=60, HorizontalAlignment=HorizontalAlignment.Center,
+                    VerticalAlignment=VerticalAlignment.Center, IsHitTestVisible=false
+                };
+                if (square == kingToTilt) { visual.RenderTransform = new RotateTransform(45); visual.RenderTransformOrigin = new Point(0.5,0.5); }
+                content.Children.Add(visual);
+            }
             var lightSquare=(row+col)%2==0;
             var squareColor=lightSquare?Color.FromRgb(238,238,210):Color.FromRgb(118,150,86);
             var background=_selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
@@ -197,9 +201,18 @@ public partial class MainWindow : Window
         if (!_legalTargets.Contains(square)) return;
 
         var from=_selected;
+        var movingPiece=_rules.Game.GetPieceAt(new Position(from));
+        var isPromotion=movingPiece is not null && movingPiece.GetFenCharacter() is 'P' or 'p' && (square.EndsWith('8') || square.EndsWith('1'));
+        var promotion='q';
+        if (isPromotion)
+        {
+            var chooser=new PromotionDialog(localColor == Player.White) { Owner=this };
+            if (chooser.ShowDialog() != true || chooser.SelectedPiece is null) return;
+            promotion=chooser.SelectedPiece.Value;
+        }
         if (_isHost)
         {
-            if (!_rules.Move(from,square)) { _selected=null; _legalTargets.Clear(); DrawBoard(); return; }
+            if (!_rules.Move(from,square,promotion.ToString())) { _selected=null; _legalTargets.Clear(); DrawBoard(); return; }
             _sequence++; _selected=null; _legalTargets.Clear(); DrawBoard();
             var result=GetGameResult();
             var moveText=FormatMove(from,square,result);
@@ -210,7 +223,7 @@ public partial class MainWindow : Window
         else
         {
             _waitingForState=true;
-            await _network.SendAsync(new NetworkMessage{Command="MOVE",SessionId=_sessionId,Sequence=_sequence+1,From=from,To=square,Promotion="q"});
+            await _network.SendAsync(new NetworkMessage{Command="MOVE",SessionId=_sessionId,Sequence=_sequence+1,From=from,To=square,Promotion=promotion.ToString()});
             _selected=null; _legalTargets.Clear(); DrawBoard(); StatusText.Text="Đang chờ máy chủ xác nhận nước đi…";
         }
     }
@@ -220,6 +233,16 @@ public partial class MainWindow : Window
         _selected=square; _legalTargets.Clear();
         foreach (var target in _rules.LegalDestinations(square)) _legalTargets.Add(target);
         DrawBoard();
+    }
+    private string? FindKingSquare(Player color)
+    {
+        for (var rank=1;rank<=8;rank++) for (var file='a';file<='h';file++)
+        {
+            var square=$"{file}{rank}";
+            var piece=_rules.Game.GetPieceAt(new Position(square));
+            if (piece is not null && piece.Owner==color && char.ToLowerInvariant(piece.GetFenCharacter())=='k') return square;
+        }
+        return null;
     }
     protected override async void OnClosed(EventArgs e){_roomCancellation?.Cancel();if(_network is not null)await _network.DisposeAsync();base.OnClosed(e);}
 }

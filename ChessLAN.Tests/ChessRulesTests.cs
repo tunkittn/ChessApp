@@ -1,4 +1,5 @@
 using ChessLAN.Services;
+using ChessLAN.Controls;
 
 namespace ChessLAN.Tests;
 
@@ -85,5 +86,31 @@ public sealed class ChessRulesTests
         Assert.True(game.Move("g2", "g4"));
         Assert.True(game.Move("d8", "h4"));
         Assert.True(game.IsCheckmate);
+    }
+
+    [Theory]
+    [InlineData('q', "♕")]
+    [InlineData('r', "♖")]
+    [InlineData('b', "♗")]
+    [InlineData('n', "♘")]
+    public void PromotionChoiceIsApplied(char choice, string expectedPiece)
+    {
+        var game = new ChessRulesService();
+        game.Load("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
+
+        Assert.True(game.Move("a7", "a8", choice.ToString()));
+        Assert.Equal(expectedPiece, game.PieceAt("a8"));
+    }
+
+    [Theory]
+    [InlineData('K')]
+    [InlineData('Q')]
+    [InlineData('R')]
+    [InlineData('B')]
+    [InlineData('N')]
+    [InlineData('P')]
+    public void AllPieceVectorGeometriesParse(char piece)
+    {
+        Assert.False(ChessPieceVisual.CreateGeometry(piece).IsEmpty());
     }
 }
