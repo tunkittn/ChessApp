@@ -10,6 +10,9 @@
 
   <ItemGroup>
     <PackageReference Include="ChessDotNet" Version="1.0.0" />
+	 <Content Include="Sounds\move.MP3" CopyToOutputDirectory="PreserveNewest" />
+	 <Content Include="Sounds\capture.MP3" CopyToOutputDirectory="PreserveNewest" />
+	 <Content Include="Sounds\check.MP3" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

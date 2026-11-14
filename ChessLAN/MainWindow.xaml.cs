@@ -22,6 +22,7 @@ namespace ChessLAN;
 public partial class MainWindow : Window
 {
     private readonly ChessRulesService _rules = new();
+    private readonly ChessSoundService _sound = new();
     private TcpChessService? _network;
     private string? _selected;
     private readonly HashSet<string> _legalTargets = new(StringComparer.OrdinalIgnoreCase);
@@ -83,13 +84,15 @@ public partial class MainWindow : Window
         if (m.Command == "MOVE" && _isHost && m.Sequence == _sequence + 1)
         {
             if (m.SessionId != _sessionId) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Sai phiên chơi."}); return; }
+            var isCapture = IsCapture(m.From, m.To);
             if (_gameOver || _rules.Game.WhoseTurn != Player.Black || !_rules.Move(m.From,m.To,m.Promotion)) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ hoặc chưa đến lượt Đen."}); return; }
             _sequence++;
             var result=GetGameResult();
             var moveText=FormatMove(m.From,m.To,result);
             AppendMoveHistory(_sequence,moveText);
             UpdateTurnStatus(result);
-            DrawBoard(); await BroadcastStateAsync(moveText,result);
+            PlayMoveSound(isCapture);
+            DrawBoard(); await BroadcastStateAsync(moveText,result,isCapture);
             if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
             return;
         }
@@ -97,12 +100,12 @@ public partial class MainWindow : Window
         {
             _sequence=m.Sequence; _rules.Load(m.Fen); _waitingForState=false; _selected=null; _legalTargets.Clear();
             AppendMoveHistory(_sequence,m.MoveText);
-            UpdateTurnStatus(m.Result); DrawBoard();
+            UpdateTurnStatus(m.Result); PlayMoveSound(m.IsCapture); DrawBoard();
             if (!string.IsNullOrEmpty(m.Result)) ShowGameOver(m.Result);
         }
         if (m.Command == "ERROR") { _waitingForState=false; _selected=null; _legalTargets.Clear(); DrawBoard(); MessageBox.Show(m.Text,"Nước đi bị từ chối"); }
     }
-    private async Task BroadcastStateAsync(string moveText, string result) => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen,MoveText=moveText,Result=result});
+    private async Task BroadcastStateAsync(string moveText, string result, bool isCapture) => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen,MoveText=moveText,Result=result,IsCapture=isCapture});
     private string GetGameResult()
     {
         if (_rules.IsCheckmate) return $"Chiếu hết! {( _rules.Game.WhoseTurn == Player.White ? "Đen" : "Trắng")} thắng.";
@@ -207,6 +210,7 @@ public partial class MainWindow : Window
 
         var from=_selected;
         var movingPiece=_rules.Game.GetPieceAt(new Position(from));
+        var isCapture=IsCapture(from,square);
         var isPromotion=movingPiece is not null && movingPiece.GetFenCharacter() is 'P' or 'p' && (square.EndsWith('8') || square.EndsWith('1'));
         var promotion='q';
         if (isPromotion)
@@ -218,11 +222,11 @@ public partial class MainWindow : Window
         if (_isHost)
         {
             if (!_rules.Move(from,square,promotion.ToString())) { _selected=null; _legalTargets.Clear(); DrawBoard(); return; }
-            _sequence++; _selected=null; _legalTargets.Clear(); DrawBoard();
+            _sequence++; _selected=null; _legalTargets.Clear();
             var result=GetGameResult();
             var moveText=FormatMove(from,square,result);
-            AppendMoveHistory(_sequence,moveText); UpdateTurnStatus(result);
-            await BroadcastStateAsync(moveText,result);
+            AppendMoveHistory(_sequence,moveText); UpdateTurnStatus(result); PlayMoveSound(isCapture); DrawBoard();
+            await BroadcastStateAsync(moveText,result,isCapture);
             if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
         }
         else
@@ -239,6 +243,17 @@ public partial class MainWindow : Window
         foreach (var target in _rules.LegalDestinations(square)) _legalTargets.Add(target);
         DrawBoard();
     }
+    private bool IsCapture(string from, string to)
+    {
+        var target = _rules.Game.GetPieceAt(new Position(to));
+        if (target is not null) return true;
+
+        var movingPiece = _rules.Game.GetPieceAt(new Position(from));
+        return movingPiece is not null
+            && movingPiece.GetFenCharacter() is 'P' or 'p'
+            && from[0] != to[0];
+    }
+    private void PlayMoveSound(bool isCapture) => _sound.PlayMove(isCapture, _rules.Game.IsInCheck(_rules.Game.WhoseTurn));
     private string? FindKingSquare(Player color)
     {
         for (var rank=1;rank<=8;rank++) for (var file='a';file<='h';file++)

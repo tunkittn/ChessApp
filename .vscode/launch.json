@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ChessLAN",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build ChessLAN",
+      "program": "${workspaceFolder}/ChessLAN/bin/Debug/net8.0-windows/ChessLAN.dll",
+      "cwd": "${workspaceFolder}/ChessLAN",
+      "console": "internalConsole",
+      "stopAtEntry": false
+    }
+  ]
+}

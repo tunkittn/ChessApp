@@ -14,4 +14,5 @@ public sealed class NetworkMessage
     public string Text { get; set; } = "";
     public string MoveText { get; set; } = "";
     public string Result { get; set; } = "";
+    public bool IsCapture { get; set; }
 }
