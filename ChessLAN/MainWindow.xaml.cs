@@ -33,10 +33,12 @@ public partial class MainWindow : Window
     private bool _isHost;
     private bool _waitingForState;
     private bool _gameOver;
+    private bool _blackPerspective;
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
     {
         InitializeComponent();
+        UpdateCoordinates();
         DrawBoard();
     }
 
@@ -96,13 +98,15 @@ public partial class MainWindow : Window
     {
         if (m.Command == "HELLO" && _isHost)
         {
+            _blackPerspective=false;
             _sessionId = _network!.SessionId;
             await _network.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_sessionId, Name=NicknameBox.Text, Fen=_rules.Fen });
             StatusText.Text = $"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
         }
         if (m.Command == "WELCOME" && !_isHost && !string.IsNullOrWhiteSpace(m.SessionId))
         {
-            _sessionId=m.SessionId; _rules.Load(m.Fen); _sequence=0; _waitingForState=false;
+            _blackPerspective=true; _sessionId=m.SessionId; _rules.Load(m.Fen); _sequence=0; _waitingForState=false;
+            UpdateCoordinates();
             StatusText.Text=$"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
         }
         if (m.Command == "MOVE" && _isHost && m.Sequence == _sequence + 1)
@@ -169,13 +173,16 @@ public partial class MainWindow : Window
     private void DrawBoard()
     {
         Board.Children.Clear();
+        UpdateCoordinates();
         var kingToTilt = _gameOver && _rules.IsCheckmate ? FindKingSquare(_rules.Game.WhoseTurn) : null;
         var kingInCheck = _rules.Game.IsInCheck(_rules.Game.WhoseTurn)
             ? FindKingSquare(_rules.Game.WhoseTurn)
             : null;
         for(int row=0;row<8;row++) for(int col=0;col<8;col++)
         {
-            var file=(char)('a'+col); var rank=8-row; var square=$"{file}{rank}";
+            var file=_blackPerspective ? (char)('h'-col) : (char)('a'+col);
+            var rank=_blackPerspective ? row+1 : 8-row;
+            var square=$"{file}{rank}";
             var piece=_rules.Game.GetPieceAt(new Position(square));
             var content = new Grid();
             if (_legalTargets.Contains(square))
@@ -201,13 +208,21 @@ public partial class MainWindow : Window
                 if (square == kingToTilt) { visual.RenderTransform = new RotateTransform(90); visual.RenderTransformOrigin = new Point(0.5,0.5); }
                 content.Children.Add(visual);
             }
-            var lightSquare=(row+col)%2==0;
+            var lightSquare=((file-'a')+rank)%2==0;
             var squareColor=lightSquare?Color.FromRgb(238,238,210):Color.FromRgb(118,150,86);
             var background=square==kingInCheck
                 ? new SolidColorBrush(Color.FromRgb(205,72,67))
                 : _selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
             var b=new Button{Style=(Style)FindResource("SquareButton"),Content=content,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=background,Tag=square};
             b.Click+=Square_Click; Board.Children.Add(b);
+        }
+    }
+    private void UpdateCoordinates()
+    {
+        for (var i=0;i<8;i++)
+        {
+            ((TextBlock)RankCoordinates.Children[i]).Text=(_blackPerspective ? i+1 : 8-i).ToString();
+            ((TextBlock)FileCoordinates.Children[i]).Text=((char)(_blackPerspective ? 'h'-i : 'a'+i)).ToString();
         }
     }
     private async void Square_Click(object sender,RoutedEventArgs e)

@@ -32,8 +32,8 @@
       <Grid.RowDefinitions><RowDefinition Height="20"/><RowDefinition Height="*"/><RowDefinition Height="20"/></Grid.RowDefinitions>
       <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/></Grid.ColumnDefinitions>
       <UniformGrid x:Name="Board" Grid.Row="1" Grid.Column="1" Rows="8" Columns="8"/>
-      <UniformGrid Grid.Row="1" Grid.Column="0" Rows="8" IsHitTestVisible="False"><TextBlock Text="8"/><TextBlock Text="7"/><TextBlock Text="6"/><TextBlock Text="5"/><TextBlock Text="4"/><TextBlock Text="3"/><TextBlock Text="2"/><TextBlock Text="1"/></UniformGrid>
-      <UniformGrid Grid.Row="2" Grid.Column="1" Columns="8" IsHitTestVisible="False"><TextBlock Text="a"/><TextBlock Text="b"/><TextBlock Text="c"/><TextBlock Text="d"/><TextBlock Text="e"/><TextBlock Text="f"/><TextBlock Text="g"/><TextBlock Text="h"/></UniformGrid>
+      <UniformGrid x:Name="RankCoordinates" Grid.Row="1" Grid.Column="0" Rows="8" IsHitTestVisible="False"><TextBlock/><TextBlock/><TextBlock/><TextBlock/><TextBlock/><TextBlock/><TextBlock/><TextBlock/></UniformGrid>
+      <UniformGrid x:Name="FileCoordinates" Grid.Row="2" Grid.Column="1" Columns="8" IsHitTestVisible="False"><TextBlock/><TextBlock/><TextBlock/><TextBlock/><TextBlock/><TextBlock/><TextBlock/><TextBlock/></UniformGrid>
      </Grid>
     </Viewbox>
    </Border>
