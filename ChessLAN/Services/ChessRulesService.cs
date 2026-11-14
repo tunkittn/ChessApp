@@ -10,6 +10,7 @@ public sealed class ChessRulesService
     public string Fen => Game.GetFen();
     public bool IsCheckmate => Game.IsCheckmated(Game.WhoseTurn);
     public bool IsStalemate => Game.IsStalemated(Game.WhoseTurn);
+    public bool IsBareKings => Game.PiecesOnBoard.Count == 2 && Game.PiecesOnBoard.All(piece => char.ToLowerInvariant(piece.GetFenCharacter()) == 'k');
     public IEnumerable<string> LegalDestinations(string square)
     {
         try { return Game.GetValidMoves(new Position(square)).Select(x => x.NewPosition.ToString()).ToArray(); }

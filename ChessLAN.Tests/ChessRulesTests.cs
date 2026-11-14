@@ -113,4 +113,12 @@ public sealed class ChessRulesTests
     {
         Assert.False(ChessPieceVisual.CreateGeometry(piece).IsEmpty());
     }
+
+    [Fact]
+    public void BareKingsAreRecognizedForImmediateDraw()
+    {
+        var game = new ChessRulesService();
+        game.Load("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+        Assert.True(game.IsBareKings);
+    }
 }

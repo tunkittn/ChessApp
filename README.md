@@ -15,6 +15,8 @@ dotnet run --project ChessLAN/ChessLAN.csproj
 
 Các kiểm thử luật cờ bao gồm lượt đi, nước tốt, chặn quân, không tự ăn quân, không bắt vua, nhập thành, bắt tốt qua đường, phong cấp và nước đi làm lộ vua.
 
+Trong sảnh, máy chủ chọn thời gian 10, 5 hoặc 1 phút. Đồng hồ máy chủ là nguồn chính thức và được đồng bộ qua TCP. Hết giờ hoặc đầu hàng sẽ xử thua; khi đối thủ ngắt kết nối, người còn lại thắng. Khi chỉ còn hai vua, ván cờ hòa ngay lập tức.
+
 Mở hai cửa sổ ứng dụng. Ở cửa sổ thứ nhất, đặt cổng 5000 và chọn **Tạo phòng**. Ở cửa sổ thứ hai, nhập `127.0.0.1`, cổng `5000`, rồi chọn **Tham gia** để thử trên cùng máy.
 
 Để chơi trong LAN, máy chủ dùng **Tạo phòng**; người chơi còn lại nhập địa chỉ IPv4 LAN của máy chủ (ví dụ `192.168.1.25`) và cùng cổng TCP. Cho phép ChessLAN qua Windows Firewall trên mạng riêng nếu Windows hỏi. Kết nối Internet trực tiếp có thể cần cấu hình firewall, port forwarding hoặc VPN.

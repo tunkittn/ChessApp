@@ -16,6 +16,9 @@ using ChessDotNet;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Diagnostics;
+using System.IO;
+using System.Windows.Threading;
 
 namespace ChessLAN;
 
@@ -35,10 +38,23 @@ public partial class MainWindow : Window
     private bool _waitingForState;
     private bool _gameOver;
     private bool _blackPerspective;
+    private bool _gameStarted;
+    private bool _closingWindow;
+    private bool _clockRunning;
+    private long _whiteMilliseconds;
+    private long _blackMilliseconds;
+    private long _clockTimestamp;
+    private long _lastClockSync;
+    private Player _clockActive = Player.White;
+    private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
     {
         InitializeComponent();
+        _clockTimer.Tick += ClockTimer_Tick;
+        _clockTimer.Start();
+        _whiteMilliseconds=_blackMilliseconds=GetTimeControlSeconds()*1000L;
+        RefreshClockLabels();
         UpdateCoordinates();
         DrawBoard();
     }
@@ -48,23 +64,25 @@ public partial class MainWindow : Window
         try
         {
             _roomCancellation = new CancellationTokenSource(); _network = CreateNetwork(); _isHost = true;
+            _blackPerspective=false;
+            TimeControlBox.IsEnabled=false;
             var lanAddresses=GetLanIpv4Addresses();
             RoomHintText.Text=lanAddresses.Length == 0
                 ? "Không tìm thấy IPv4 LAN. Hãy kiểm tra Wi‑Fi/Ethernet đang bật. Cổng TCP: " + PortBox.Text
                 : $"IP LAN của máy tạo phòng: {string.Join(", ",lanAddresses)}\nMáy kia nhập một IP này và cổng {PortBox.Text}. Không dùng 127.0.0.1 khi chơi giữa hai máy.";
             SetWaiting(true, $"Đang chờ đối thủ · cổng {PortBox.Text}");
-            await _network.HostAsync(int.Parse(PortBox.Text), NicknameBox.Text, _roomCancellation.Token);
+            await _network.HostAsync(int.Parse(PortBox.Text), _roomCancellation.Token);
             SetWaiting(false, "Đối thủ đã kết nối · chờ xác nhận");
         }
         catch (OperationCanceledException) { SetWaiting(false, "Đã hủy tạo phòng"); }
-        catch (SocketException ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
-        catch (Exception ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
+        catch (SocketException ex) { TimeControlBox.IsEnabled=true; SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
+        catch (Exception ex) { TimeControlBox.IsEnabled=true; SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
     }
     private async void Join_Click(object sender, RoutedEventArgs e)
     {
-        try { SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
-        catch (SocketException ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
-        catch (Exception ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
+        try { TimeControlBox.IsEnabled=false; SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
+        catch (SocketException ex) { TimeControlBox.IsEnabled=true; SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
+        catch (Exception ex) { TimeControlBox.IsEnabled=true; SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
     }
     private static string[] GetLanIpv4Addresses() => NetworkInterface.GetAllNetworkInterfaces()
         .Where(adapter => adapter.OperationalStatus == OperationalStatus.Up && adapter.NetworkInterfaceType is NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.Ethernet)
@@ -91,9 +109,21 @@ public partial class MainWindow : Window
     private TcpChessService CreateNetwork()
     {
         var service = new TcpChessService();
-        service.StatusChanged += s => Dispatcher.Invoke(() => { StatusText.Text = s; StatusDot.Fill = new SolidColorBrush(Color.FromRgb(129,182,76)); });
+        service.StatusChanged += s => Dispatcher.Invoke(() =>
+        {
+            StatusText.Text = s; StatusDot.Fill = new SolidColorBrush(Color.FromRgb(129,182,76));
+            if (_gameStarted && !_gameOver && !_closingWindow && s.Contains("ngắt kết nối",StringComparison.OrdinalIgnoreCase))
+                _ = HandleOpponentDisconnectAsync();
+        });
         service.MessageReceived += m => Dispatcher.Invoke(() => Receive(m));
         return service;
+    }
+    private Task HandleOpponentDisconnectAsync()
+    {
+        var winner=_isHost ? "Trắng" : "Đen";
+        _clockRunning=false;
+        ShowGameOver($"Đối thủ ngắt kết nối · {winner} thắng");
+        return Task.CompletedTask;
     }
     private async void Receive(NetworkMessage m)
     {
@@ -101,26 +131,46 @@ public partial class MainWindow : Window
         {
             _blackPerspective=false;
             _sessionId = _network!.SessionId;
-            await _network.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_sessionId, Name=NicknameBox.Text, Fen=_rules.Fen });
+            _gameStarted=true; ResignButton.IsEnabled=true;
+            StartClock(GetTimeControlSeconds());
+            await _network.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_sessionId, Name=NicknameBox.Text, Fen=_rules.Fen, TimeControlSeconds=GetTimeControlSeconds(), WhiteMilliseconds=_whiteMilliseconds, BlackMilliseconds=_blackMilliseconds, ActiveColor="W" });
             StatusText.Text = $"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
         }
         if (m.Command == "WELCOME" && !_isHost && !string.IsNullOrWhiteSpace(m.SessionId))
         {
             _blackPerspective=true; _sessionId=m.SessionId; _rules.Load(m.Fen); _sequence=0; _waitingForState=false;
+            _gameStarted=true; ResignButton.IsEnabled=true; StartClock(m.TimeControlSeconds); ApplyClockMessage(m);
             UpdateCoordinates();
             StatusText.Text=$"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
+        }
+        if (m.Command == "CLOCK" && !_isHost && _gameStarted && m.SessionId == _sessionId)
+        {
+            ApplyClockMessage(m); return;
+        }
+        if (m.Command == "GAME_OVER" && m.SessionId == _sessionId)
+        {
+            _whiteMilliseconds=m.WhiteMilliseconds; _blackMilliseconds=m.BlackMilliseconds;
+            _clockRunning=false; RefreshClockLabels(); ShowGameOver(m.Result); return;
+        }
+        if (m.Command == "RESIGN" && _isHost && m.SessionId == _sessionId)
+        {
+            await FinishHostGameAsync("Đen đầu hàng · Trắng thắng"); return;
         }
         if (m.Command == "MOVE" && _isHost && m.Sequence == _sequence + 1)
         {
             if (m.SessionId != _sessionId) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Sai phiên chơi."}); return; }
             var isCapture = IsCapture(m.From, m.To);
+            UpdateHostClock();
+            if (_blackMilliseconds<=0) { await FinishHostGameAsync("Hết giờ · Trắng thắng"); return; }
             if (_gameOver || _rules.Game.WhoseTurn != Player.Black || !_rules.Move(m.From,m.To,m.Promotion)) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ hoặc chưa đến lượt Đen."}); return; }
+            SwitchClockTo(_rules.Game.WhoseTurn);
             _sequence++;
             var result=GetGameResult();
             var moveText=FormatMove(m.From,m.To,result);
             AppendMoveHistory(_sequence,moveText);
             UpdateTurnStatus(result);
             PlayMoveSound(isCapture);
+            if (!string.IsNullOrEmpty(result)) _clockRunning=false;
             DrawBoard(); await BroadcastStateAsync(moveText,result,isCapture);
             if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
             return;
@@ -128,19 +178,114 @@ public partial class MainWindow : Window
         if (m.Command == "STATE" && !_isHost && m.SessionId == _sessionId && m.Sequence == _sequence + 1)
         {
             _sequence=m.Sequence; _rules.Load(m.Fen); _waitingForState=false; _selected=null; _legalTargets.Clear();
+            ApplyClockMessage(m);
             AppendMoveHistory(_sequence,m.MoveText);
             UpdateTurnStatus(m.Result); PlayMoveSound(m.IsCapture); DrawBoard();
             if (!string.IsNullOrEmpty(m.Result)) ShowGameOver(m.Result);
         }
         if (m.Command == "ERROR") { _waitingForState=false; _selected=null; _legalTargets.Clear(); DrawBoard(); MessageBox.Show(m.Text,"Nước đi bị từ chối"); }
     }
-    private async Task BroadcastStateAsync(string moveText, string result, bool isCapture) => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen,MoveText=moveText,Result=result,IsCapture=isCapture});
+    private async Task BroadcastStateAsync(string moveText, string result, bool isCapture) => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen,MoveText=moveText,Result=result,IsCapture=isCapture,WhiteMilliseconds=_whiteMilliseconds,BlackMilliseconds=_blackMilliseconds,ActiveColor=_clockActive==Player.White?"W":"B"});
     private string GetGameResult()
     {
         if (_rules.IsCheckmate) return $"Chiếu hết! {( _rules.Game.WhoseTurn == Player.White ? "Đen" : "Trắng")} thắng.";
         if (_rules.IsStalemate) return "Hòa cờ do hết nước đi hợp lệ.";
+        if (_rules.IsBareKings) return "Hòa cờ · chỉ còn hai vua.";
         if (_rules.Game.IsDraw()) return "Ván cờ hòa.";
         return "";
+    }
+
+    private int GetTimeControlSeconds() => TimeControlBox.SelectedItem is ComboBoxItem item && int.TryParse(item.Tag?.ToString(),out var seconds) ? seconds : 300;
+    private void StartClock(int seconds)
+    {
+        var milliseconds=Math.Clamp(seconds,60,600)*1000L;
+        _whiteMilliseconds=milliseconds; _blackMilliseconds=milliseconds;
+        _clockActive=Player.White; _clockTimestamp=Stopwatch.GetTimestamp(); _lastClockSync=_clockTimestamp;
+        _clockRunning=true; RefreshClockLabels();
+    }
+    private void UpdateHostClock()
+    {
+        if (!_clockRunning || !_isHost) return;
+        var now=Stopwatch.GetTimestamp();
+        var elapsed=(long)Stopwatch.GetElapsedTime(_clockTimestamp,now).TotalMilliseconds;
+        _clockTimestamp=now;
+        if (_clockActive==Player.White) _whiteMilliseconds=Math.Max(0,_whiteMilliseconds-elapsed);
+        else _blackMilliseconds=Math.Max(0,_blackMilliseconds-elapsed);
+        RefreshClockLabels();
+    }
+    private void SwitchClockTo(Player player)
+    {
+        _clockActive=player; _clockTimestamp=Stopwatch.GetTimestamp(); RefreshClockLabels();
+    }
+    private void ApplyClockMessage(NetworkMessage message)
+    {
+        _whiteMilliseconds=Math.Max(0,message.WhiteMilliseconds);
+        _blackMilliseconds=Math.Max(0,message.BlackMilliseconds);
+        _clockActive=message.ActiveColor=="B" ? Player.Black : Player.White;
+        _clockTimestamp=Stopwatch.GetTimestamp(); _clockRunning=true;
+        RefreshClockLabels();
+    }
+    private void RefreshClockLabels()
+    {
+        WhiteClockText.Text=$"TRẮNG  {FormatClock(_whiteMilliseconds)}";
+        BlackClockText.Text=$"ĐEN  {FormatClock(_blackMilliseconds)}";
+        var activeBrush=new SolidColorBrush(Color.FromRgb(129,182,76));
+        var idleBrush=new SolidColorBrush(Color.FromRgb(25,28,33));
+        WhiteClockBorder.Background=_clockRunning && _clockActive==Player.White ? activeBrush : idleBrush;
+        BlackClockBorder.Background=_clockRunning && _clockActive==Player.Black ? activeBrush : idleBrush;
+    }
+    private static string FormatClock(long milliseconds)
+    {
+        var time=TimeSpan.FromMilliseconds(Math.Max(0,milliseconds));
+        return $"{(int)time.TotalMinutes:00}:{time.Seconds:00}";
+    }
+    private async void ClockTimer_Tick(object? sender,EventArgs e)
+    {
+        if (!_clockRunning || !_gameStarted || _gameOver) return;
+        if (_isHost)
+        {
+            UpdateHostClock();
+            if ((_clockActive==Player.White?_whiteMilliseconds:_blackMilliseconds)<=0)
+            {
+                var winner=_clockActive==Player.White ? "Đen" : "Trắng";
+                await FinishHostGameAsync($"Hết giờ · {winner} thắng"); return;
+            }
+            var now=Stopwatch.GetTimestamp();
+            if (Stopwatch.GetElapsedTime(_lastClockSync,now).TotalMilliseconds>=1000 && _network is not null)
+            {
+                _lastClockSync=now;
+                try { await _network.SendAsync(new NetworkMessage{Command="CLOCK",SessionId=_sessionId,WhiteMilliseconds=_whiteMilliseconds,BlackMilliseconds=_blackMilliseconds,ActiveColor=_clockActive==Player.White?"W":"B"}); }
+                catch (IOException) { }
+            }
+        }
+        else
+        {
+            var now=Stopwatch.GetTimestamp();
+            var elapsed=(long)Stopwatch.GetElapsedTime(_clockTimestamp,now).TotalMilliseconds;
+            _clockTimestamp=now;
+            if (_clockActive==Player.White) _whiteMilliseconds=Math.Max(0,_whiteMilliseconds-elapsed);
+            else _blackMilliseconds=Math.Max(0,_blackMilliseconds-elapsed);
+            RefreshClockLabels();
+        }
+    }
+    private async Task FinishHostGameAsync(string result)
+    {
+        if (_gameOver) return;
+        UpdateHostClock();
+        _clockRunning=false; ShowGameOver(result);
+        if (_network is not null && !string.IsNullOrEmpty(_sessionId))
+            await _network.SendAsync(new NetworkMessage{Command="GAME_OVER",SessionId=_sessionId,Result=result,WhiteMilliseconds=_whiteMilliseconds,BlackMilliseconds=_blackMilliseconds});
+    }
+    private async void Resign_Click(object sender,RoutedEventArgs e)
+    {
+        if (!_gameStarted || _gameOver || _network is null) return;
+        if (_isHost) await FinishHostGameAsync("Trắng đầu hàng · Đen thắng");
+        else
+        {
+            ResignButton.IsEnabled=false;
+            await _network.SendAsync(new NetworkMessage{Command="RESIGN",SessionId=_sessionId});
+            StatusText.Text="Đã gửi yêu cầu đầu hàng…";
+        }
     }
     private string FormatMove(string from, string to, string result)
     {
@@ -165,13 +310,16 @@ public partial class MainWindow : Window
     {
         if (_gameOver) return;
         _gameOver=true;
+        _clockRunning=false; ResignButton.IsEnabled=false; RefreshClockLabels();
         var isCheckmate=result.StartsWith("Chiếu hết",StringComparison.Ordinal);
-        GameResultLabel.Text=isCheckmate ? "CHECKMATE" : "HÒA CỜ";
-        GameResultLabel.Foreground=new SolidColorBrush(isCheckmate ? Color.FromRgb(235,112,94) : Color.FromRgb(129,182,76));
+        var bareKings=result.Contains("chỉ còn hai vua",StringComparison.OrdinalIgnoreCase);
+        var isDraw=result.Contains("hòa",StringComparison.OrdinalIgnoreCase);
+        GameResultLabel.Text=isCheckmate ? "CHECKMATE" : bareKings ? "HÒA · HAI VUA" : isDraw ? "HÒA CỜ" : result.StartsWith("Hết giờ",StringComparison.OrdinalIgnoreCase) ? "HẾT GIỜ" : result.StartsWith("Đối thủ ngắt",StringComparison.OrdinalIgnoreCase) ? "ĐỐI THỦ THOÁT" : "ĐẦU HÀNG";
+        GameResultLabel.Foreground=new SolidColorBrush(isCheckmate ? Color.FromRgb(235,112,94) : isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,145,98));
         var winner=result.Contains("Đen thắng",StringComparison.Ordinal) ? "Đen thắng" : result.Contains("Trắng thắng",StringComparison.Ordinal) ? "Trắng thắng" : "Hòa cờ";
-        StatusText.Text=isCheckmate ? $"CHECKMATE · {winner}" : result;
-        StatusDot.Fill=new SolidColorBrush(isCheckmate ? Color.FromRgb(235,112,94) : Color.FromRgb(129,182,76));
-        if (isCheckmate) DrawBoard();
+        StatusText.Text=isCheckmate ? $"CHECKMATE · {winner}" : isDraw ? result : result;
+        StatusDot.Fill=new SolidColorBrush(isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,112,94));
+        if (isCheckmate || bareKings) DrawBoard();
     }
     private void DrawBoard()
     {
@@ -181,6 +329,7 @@ public partial class MainWindow : Window
         var kingInCheck = _rules.Game.IsInCheck(_rules.Game.WhoseTurn)
             ? FindKingSquare(_rules.Game.WhoseTurn)
             : null;
+        var grayKingSquares=_gameOver && _rules.IsBareKings;
         for(int row=0;row<8;row++) for(int col=0;col<8;col++)
         {
             var file=_blackPerspective ? (char)('h'-col) : (char)('a'+col);
@@ -213,7 +362,10 @@ public partial class MainWindow : Window
             }
             var lightSquare=((file-'a')+rank)%2==0;
             var squareColor=lightSquare?Color.FromRgb(238,238,210):Color.FromRgb(118,150,86);
-            var background=square==kingInCheck
+            var isKing=piece is not null && char.ToLowerInvariant(piece.GetFenCharacter())=='k';
+            var background=grayKingSquares && isKing
+                ? new SolidColorBrush(Color.FromRgb(135,139,143))
+                : square==kingInCheck
                 ? new SolidColorBrush(Color.FromRgb(205,72,67))
                 : _selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
             var b=new Button{Style=(Style)FindResource("SquareButton"),Content=content,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=background,Tag=square};
@@ -251,7 +403,7 @@ public partial class MainWindow : Window
         var from=_selected;
         var movingPiece=_rules.Game.GetPieceAt(new Position(from));
         var isCapture=IsCapture(from,square);
-        var isPromotion=movingPiece is not null && movingPiece.GetFenCharacter() is 'P' or 'p' && (square.EndsWith('8') || square.EndsWith('1'));
+        var isPromotion=movingPiece is not null && (movingPiece.GetFenCharacter() is 'P' or 'p') && (square.EndsWith('8') || square.EndsWith('1'));
         var promotion='q';
         if (isPromotion)
         {
@@ -261,11 +413,15 @@ public partial class MainWindow : Window
         }
         if (_isHost)
         {
+            UpdateHostClock();
+            if (_whiteMilliseconds<=0) { await FinishHostGameAsync("Hết giờ · Đen thắng"); return; }
             if (!_rules.Move(from,square,promotion.ToString())) { _selected=null; _legalTargets.Clear(); DrawBoard(); return; }
             _sequence++; _selected=null; _legalTargets.Clear();
+            SwitchClockTo(_rules.Game.WhoseTurn);
             var result=GetGameResult();
             var moveText=FormatMove(from,square,result);
             AppendMoveHistory(_sequence,moveText); UpdateTurnStatus(result); PlayMoveSound(isCapture); DrawBoard();
+            if (!string.IsNullOrEmpty(result)) _clockRunning=false;
             await BroadcastStateAsync(moveText,result,isCapture);
             if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
         }
@@ -304,5 +460,10 @@ public partial class MainWindow : Window
         }
         return null;
     }
-    protected override async void OnClosed(EventArgs e){_roomCancellation?.Cancel();if(_network is not null)await _network.DisposeAsync();base.OnClosed(e);}
+    private void TimeControl_SelectionChanged(object sender,SelectionChangedEventArgs e)
+    {
+        if (_gameStarted || WhiteClockText is null) return;
+        _whiteMilliseconds=_blackMilliseconds=GetTimeControlSeconds()*1000L; RefreshClockLabels();
+    }
+    protected override async void OnClosed(EventArgs e){_closingWindow=true;_clockTimer.Stop();_roomCancellation?.Cancel();if(_network is not null)await _network.DisposeAsync();base.OnClosed(e);}
 }

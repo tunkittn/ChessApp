@@ -15,4 +15,8 @@ public sealed class NetworkMessage
     public string MoveText { get; set; } = "";
     public string Result { get; set; } = "";
     public bool IsCapture { get; set; }
+    public int TimeControlSeconds { get; set; }
+    public long WhiteMilliseconds { get; set; }
+    public long BlackMilliseconds { get; set; }
+    public string ActiveColor { get; set; } = "";
 }

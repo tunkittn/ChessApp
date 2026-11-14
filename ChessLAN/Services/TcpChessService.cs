@@ -21,7 +21,7 @@ public sealed class TcpChessService : IAsyncDisposable
     public bool IsHost { get; private set; }
     public string SessionId { get; private set; } = "";
 
-    public async Task HostAsync(int port, string nickname, CancellationToken token = default)
+    public async Task HostAsync(int port, CancellationToken token = default)
     {
         IsHost = true;
         SessionId = Guid.NewGuid().ToString("N");
@@ -33,7 +33,7 @@ public sealed class TcpChessService : IAsyncDisposable
         _listener.Stop(); _listener = null;
         SetStreams(_client);
         StatusChanged?.Invoke("Đối thủ đã kết nối.");
-        await SendAsync(new NetworkMessage { Command = "WELCOME", SessionId = SessionId, Name = nickname, Fen = ChessRulesService.InitialFen });
+        // The UI sends WELCOME after reading HELLO, including the chosen time control.
         _ = ReceiveLoopAsync(_stop.Token);
     }
 
