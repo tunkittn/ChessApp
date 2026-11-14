@@ -27,7 +27,7 @@ public sealed class ChessRulesService
         {
             var piece = Game.GetPieceAt(new Position(square));
             if (piece is null) return "";
-            var key = piece.ToString();
+            var key = piece.GetFenCharacter().ToString();
             return key switch { "K"=>"♔", "Q"=>"♕", "R"=>"♖", "B"=>"♗", "N"=>"♘", "P"=>"♙", "k"=>"♚", "q"=>"♛", "r"=>"♜", "b"=>"♝", "n"=>"♞", "p"=>"♟", _=>"" };
         }
         catch { return ""; }
