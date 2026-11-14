@@ -13,6 +13,9 @@
 	 <Content Include="Sounds\move.MP3" CopyToOutputDirectory="PreserveNewest" />
 	 <Content Include="Sounds\capture.MP3" CopyToOutputDirectory="PreserveNewest" />
 	 <Content Include="Sounds\check.MP3" CopyToOutputDirectory="PreserveNewest" />
+     <Content Include="Sounds\start.MP3" CopyToOutputDirectory="PreserveNewest" />
+     <Content Include="Sounds\castle.MP3" CopyToOutputDirectory="PreserveNewest" />
+     <Content Include="Sounds\end.MP3" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

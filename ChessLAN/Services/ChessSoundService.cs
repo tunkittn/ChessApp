@@ -7,14 +7,30 @@ public sealed class ChessSoundService
 {
     private readonly List<MediaPlayer> _activePlayers = [];
 
-    public void PlayMove(bool isCapture, bool givesCheck)
+    public void PlayStart() => Play("start.MP3");
+
+    public void PlayEnd()
     {
-        var fileName = givesCheck
+        foreach (var player in _activePlayers.ToArray()) player.Close();
+        _activePlayers.Clear();
+        Play("end.MP3");
+    }
+
+    public void PlayMove(bool isCapture, bool givesCheck, bool isCastling = false)
+    {
+        var fileName = isCastling
+            ? "castle.MP3"
+            : givesCheck
             ? "check.MP3"
             : isCapture
                 ? "capture.MP3"
                 : "move.MP3";
 
+        Play(fileName);
+    }
+
+    private void Play(string fileName)
+    {
         var soundPath = Path.Combine(AppContext.BaseDirectory, "Sounds", fileName);
         if (!File.Exists(soundPath)) return;
 
@@ -30,6 +46,11 @@ public sealed class ChessSoundService
         };
 
         player.MediaEnded += (_, _) =>
+        {
+            player.Close();
+            _activePlayers.Remove(player);
+        };
+        player.MediaFailed += (_, _) =>
         {
             player.Close();
             _activePlayers.Remove(player);
