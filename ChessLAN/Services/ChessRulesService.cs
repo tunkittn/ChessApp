@@ -17,7 +17,31 @@ public sealed class ChessRulesService
     }
     public bool Move(string from, string to, string promotion = "q")
     {
-        try { return Game.MakeMove(new Move(new Position(from), new Position(to), Game.WhoseTurn, string.IsNullOrEmpty(promotion) ? 'q' : char.ToLowerInvariant(promotion[0])), true) != MoveType.Invalid; }
+        try
+        {
+            var origin = new Position(from);
+            var destination = new Position(to);
+            var movingPiece = Game.GetPieceAt(origin);
+            if (movingPiece is null || movingPiece.Owner != Game.WhoseTurn) return false;
+
+            var targetPiece = Game.GetPieceAt(destination);
+            // A chess game ends by checkmate; the king is never captured.
+            if (targetPiece is not null && (targetPiece.Owner == movingPiece.Owner || targetPiece.GetFenCharacter() is 'K' or 'k')) return false;
+
+            var isPromotion = movingPiece.GetFenCharacter() is 'P' or 'p' && (to.EndsWith('8') || to.EndsWith('1'));
+            char? promotionPiece = isPromotion
+                ? (string.IsNullOrWhiteSpace(promotion) ? 'q' : char.ToLowerInvariant(promotion[0]))
+                : null;
+            if (promotionPiece is not null && promotionPiece is not ('q' or 'r' or 'b' or 'n')) return false;
+
+            var legalMove = Game.GetValidMoves(origin).FirstOrDefault(m =>
+                string.Equals(m.NewPosition.ToString(), destination.ToString(), StringComparison.OrdinalIgnoreCase) &&
+                (m.Promotion is null && promotionPiece is null ||
+                 m.Promotion is not null && promotionPiece is not null && char.ToLowerInvariant(m.Promotion.Value) == promotionPiece.Value));
+            if (legalMove is null || !Game.IsValidMove(legalMove)) return false;
+
+            return Game.MakeMove(legalMove, true) != MoveType.Invalid;
+        }
         catch { return false; }
     }
     public void Load(string fen) => Game = new ChessGame(fen);

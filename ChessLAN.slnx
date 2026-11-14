@@ -1,2 +1,4 @@
 <Solution>
+  <Project Path="ChessLAN.Tests/ChessLAN.Tests.csproj" />
+  <Project Path="ChessLAN/ChessLAN.csproj" />
 </Solution>

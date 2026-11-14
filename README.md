@@ -9,8 +9,11 @@ Yêu cầu Windows và .NET 8 SDK:
 ```powershell
 dotnet restore ChessLAN/ChessLAN.csproj
 dotnet build ChessLAN/ChessLAN.csproj
+dotnet test ChessLAN.Tests/ChessLAN.Tests.csproj
 dotnet run --project ChessLAN/ChessLAN.csproj
 ```
+
+Các kiểm thử luật cờ bao gồm lượt đi, nước tốt, chặn quân, không tự ăn quân, không bắt vua, nhập thành, bắt tốt qua đường, phong cấp và nước đi làm lộ vua.
 
 Mở hai cửa sổ ứng dụng. Ở cửa sổ thứ nhất, đặt cổng 5000 và chọn **Tạo phòng**. Ở cửa sổ thứ hai, nhập `127.0.0.1`, cổng `5000`, rồi chọn **Tham gia** để thử trên cùng máy.
 

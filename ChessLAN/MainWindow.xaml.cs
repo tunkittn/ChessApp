@@ -22,9 +22,11 @@ public partial class MainWindow : Window
     private readonly ChessRulesService _rules = new();
     private TcpChessService? _network;
     private string? _selected;
+    private readonly HashSet<string> _legalTargets = new(StringComparer.OrdinalIgnoreCase);
     private string _sessionId = "";
     private int _sequence;
     private bool _isHost;
+    private bool _waitingForState;
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
     {
@@ -63,15 +65,31 @@ public partial class MainWindow : Window
     }
     private void Receive(NetworkMessage m)
     {
-        if (m.Command == "HELLO" && _isHost) { _ = _network!.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_network.SessionId, Name=NicknameBox.Text, Fen=_rules.Fen }); StatusText.Text = $"Đang đấu với {m.Name}"; return; }
-        if (m.Command == "WELCOME") { _sessionId=m.SessionId; _rules.Load(m.Fen); StatusText.Text=$"Đang đấu với {m.Name}"; DrawBoard(); return; }
+        if (m.Command == "HELLO" && _isHost)
+        {
+            _sessionId = _network!.SessionId;
+            _ = _network.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_sessionId, Name=NicknameBox.Text, Fen=_rules.Fen });
+            StatusText.Text = $"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
+        }
+        if (m.Command == "WELCOME" && !_isHost && !string.IsNullOrWhiteSpace(m.SessionId))
+        {
+            _sessionId=m.SessionId; _rules.Load(m.Fen); _sequence=0; _waitingForState=false;
+            StatusText.Text=$"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
+        }
         if (m.Command == "MOVE" && _isHost && m.Sequence == _sequence + 1)
         {
-            if (_rules.Move(m.From,m.To,m.Promotion)) { _sequence++; _=BroadcastStateAsync(); }
-            else _= _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ."}); return;
+            if (m.SessionId != _sessionId) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Sai phiên chơi."}); return; }
+            if (_rules.Game.WhoseTurn != Player.Black || !_rules.Move(m.From,m.To,m.Promotion)) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ hoặc chưa đến lượt Đen."}); return; }
+            _sequence++; StatusText.Text=$"Đang đấu · lượt Trắng"; DrawBoard(); _=BroadcastStateAsync();
+            HistoryBox.AppendText($"{_sequence}. {m.From}–{m.To}\n");
+            return;
         }
-        if (m.Command == "STATE" && !_isHost && m.Sequence == _sequence + 1) { _sequence=m.Sequence; _rules.Load(m.Fen); DrawBoard(); }
-        if (m.Command == "ERROR") MessageBox.Show(m.Text,"Nước đi bị từ chối");
+        if (m.Command == "STATE" && !_isHost && m.SessionId == _sessionId && m.Sequence == _sequence + 1)
+        {
+            _sequence=m.Sequence; _rules.Load(m.Fen); _waitingForState=false; _selected=null; _legalTargets.Clear();
+            StatusText.Text=$"Đang đấu · lượt {(_rules.Game.WhoseTurn == Player.White ? "Trắng" : "Đen")}"; DrawBoard();
+        }
+        if (m.Command == "ERROR") { _waitingForState=false; _selected=null; _legalTargets.Clear(); DrawBoard(); MessageBox.Show(m.Text,"Nước đi bị từ chối"); }
     }
     private async Task BroadcastStateAsync() => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen});
     private void DrawBoard()
@@ -90,17 +108,70 @@ public partial class MainWindow : Window
                 Foreground=isWhite ? new SolidColorBrush(Color.FromRgb(255,253,236)) : new SolidColorBrush(Color.FromRgb(25,29,27)),
                 Effect=isWhite ? new System.Windows.Media.Effects.DropShadowEffect { Color=Color.FromRgb(30,37,25), BlurRadius=0, ShadowDepth=1, Opacity=0.9 } : null
             };
-            var b=new Button{Style=(Style)FindResource("SquareButton"),Content=glyph,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=(row+col)%2==0?new SolidColorBrush(Color.FromRgb(238,238,210)):new SolidColorBrush(Color.FromRgb(118,150,86)),Tag=square};
+            var content = new Grid();
+            if (_legalTargets.Contains(square))
+            {
+                var occupied = _rules.Game.GetPieceAt(new Position(square)) is not null;
+                content.Children.Add(new Ellipse
+                {
+                    Width=occupied ? 48 : 16, Height=occupied ? 48 : 16,
+                    Stroke=occupied ? new SolidColorBrush(Color.FromArgb(210,40,42,35)) : Brushes.Transparent,
+                    StrokeThickness=occupied ? 4 : 0,
+                    Fill=occupied ? Brushes.Transparent : new SolidColorBrush(Color.FromArgb(105,34,38,30)),
+                    HorizontalAlignment=HorizontalAlignment.Center, VerticalAlignment=VerticalAlignment.Center,
+                    IsHitTestVisible=false
+                });
+            }
+            content.Children.Add(glyph);
+            var lightSquare=(row+col)%2==0;
+            var squareColor=lightSquare?Color.FromRgb(238,238,210):Color.FromRgb(118,150,86);
+            var background=_selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
+            var b=new Button{Style=(Style)FindResource("SquareButton"),Content=content,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=background,Tag=square};
             b.Click+=Square_Click; Board.Children.Add(b);
         }
     }
     private async void Square_Click(object sender,RoutedEventArgs e)
     {
+        if (_waitingForState) return;
         var square=(string)((Button)sender).Tag;
-        if(_selected is null){_selected=square;return;}
-        if(_isHost){if(_rules.Move(_selected,square)){_sequence++;DrawBoard();await BroadcastStateAsync();HistoryBox.AppendText($"{_sequence}. {_selected}–{square}\n");}}
-        else await _network!.SendAsync(new NetworkMessage{Command="MOVE",SessionId=_sessionId,Sequence=_sequence+1,From=_selected,To=square,Promotion="q"});
-        _selected=null;
+        var localColor=_isHost ? Player.White : Player.Black;
+        if (_network is null || _rules.Game.WhoseTurn != localColor) return;
+
+        var clickedPiece=_rules.Game.GetPieceAt(new Position(square));
+        if (_selected is null)
+        {
+            SelectOwnPiece(square, clickedPiece, localColor);
+            return;
+        }
+        if (clickedPiece is not null && clickedPiece.Owner == localColor)
+        {
+            SelectOwnPiece(square, clickedPiece, localColor);
+            return;
+        }
+        if (!_legalTargets.Contains(square)) return;
+
+        var from=_selected;
+        if (_isHost)
+        {
+            if (!_rules.Move(from,square)) { _selected=null; _legalTargets.Clear(); DrawBoard(); return; }
+            _sequence++; _selected=null; _legalTargets.Clear(); DrawBoard();
+            HistoryBox.AppendText($"{_sequence}. {from}–{square}\n");
+            StatusText.Text=$"Đang đấu · lượt Đen";
+            await BroadcastStateAsync();
+        }
+        else
+        {
+            _waitingForState=true;
+            await _network.SendAsync(new NetworkMessage{Command="MOVE",SessionId=_sessionId,Sequence=_sequence+1,From=from,To=square,Promotion="q"});
+            _selected=null; _legalTargets.Clear(); DrawBoard(); StatusText.Text="Đang chờ máy chủ xác nhận nước đi…";
+        }
+    }
+    private void SelectOwnPiece(string square, Piece? piece, Player localColor)
+    {
+        if (piece is null || piece.Owner != localColor) { _selected=null; _legalTargets.Clear(); DrawBoard(); return; }
+        _selected=square; _legalTargets.Clear();
+        foreach (var target in _rules.LegalDestinations(square)) _legalTargets.Add(target);
+        DrawBoard();
     }
     protected override async void OnClosed(EventArgs e){_roomCancellation?.Cancel();if(_network is not null)await _network.DisposeAsync();base.OnClosed(e);}
 }
