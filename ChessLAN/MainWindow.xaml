@@ -23,7 +23,7 @@
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <Grid Margin="0,0,0,20"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
    <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="♞" FontSize="30" Foreground="#81B64C"/><TextBlock Text="CHESSLAN" FontSize="25" FontWeight="Bold" Foreground="#81B64C" Margin="10,0,0,0"/><TextBlock Text="  ·  CỜ VUA QUA LAN" FontSize="11" FontWeight="SemiBold" Foreground="#838A95" VerticalAlignment="Center" Margin="8,5,0,0"/></StackPanel>
-   <Border Grid.Column="1" Background="#22252B" CornerRadius="16" Padding="13,8"><StackPanel Orientation="Horizontal"><Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="#858B94" VerticalAlignment="Center"/><TextBlock x:Name="StatusText" Text="Sẵn sàng tạo hoặc tham gia phòng" Foreground="#C3C7CE" FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center"/></StackPanel></Border>
+   <Border x:Name="StatusBanner" Grid.Column="1" Background="#22252B" CornerRadius="16" Padding="16,10"><StackPanel Orientation="Horizontal"><Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="#858B94" VerticalAlignment="Center"/><TextBlock x:Name="StatusText" Text="Sẵn sàng tạo hoặc tham gia phòng" Foreground="#F1F0E8" FontSize="13" FontWeight="SemiBold" Margin="9,0,0,0" VerticalAlignment="Center"/></StackPanel></Border>
   </Grid>
   <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="390"/></Grid.ColumnDefinitions>
    <Border Background="#22252B" CornerRadius="20" Padding="18" Margin="0,0,20,0">

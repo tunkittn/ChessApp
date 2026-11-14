@@ -47,6 +47,7 @@ public partial class MainWindow : Window
     private long _lastClockSync;
     private Player _clockActive = Player.White;
     private int _selectedTimeSeconds=300;
+    private Player? _losingPlayer;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
@@ -342,18 +343,23 @@ public partial class MainWindow : Window
         var isCheckmate=result.StartsWith("Chiếu hết",StringComparison.Ordinal);
         var bareKings=result.Contains("chỉ còn hai vua",StringComparison.OrdinalIgnoreCase);
         var isDraw=result.Contains("hòa",StringComparison.OrdinalIgnoreCase);
-        GameResultLabel.Text=isCheckmate ? "CHECKMATE" : bareKings ? "HÒA · HAI VUA" : isDraw ? "HÒA CỜ" : result.StartsWith("Hết giờ",StringComparison.OrdinalIgnoreCase) ? "HẾT GIỜ" : result.StartsWith("Đối thủ ngắt",StringComparison.OrdinalIgnoreCase) ? "ĐỐI THỦ THOÁT" : "ĐẦU HÀNG";
+        var reason=isCheckmate ? "CHECKMATE" : result.StartsWith("Hết giờ",StringComparison.OrdinalIgnoreCase) ? "TIMEOUT" : result.Contains("đầu hàng",StringComparison.OrdinalIgnoreCase) ? "RESIGN" : result.Contains("ngắt kết nối",StringComparison.OrdinalIgnoreCase) ? "DISCONNECT" : bareKings ? "DRAW — BARE KINGS" : result.Contains("hết nước đi",StringComparison.OrdinalIgnoreCase) ? "STALEMATE — DRAW" : "DRAW";
+        var blackWon=result.Contains("Đen thắng",StringComparison.Ordinal);
+        var whiteWon=result.Contains("Trắng thắng",StringComparison.Ordinal);
+        _losingPlayer=whiteWon ? Player.Black : blackWon ? Player.White : null;
+        var banner=isDraw ? reason : $"{reason} — {(whiteWon ? "WHITE WON" : "BLACK WON")}";
+        GameResultLabel.Text=reason;
         GameResultLabel.Foreground=new SolidColorBrush(isCheckmate ? Color.FromRgb(235,112,94) : isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,145,98));
-        var winner=result.Contains("Đen thắng",StringComparison.Ordinal) ? "Đen thắng" : result.Contains("Trắng thắng",StringComparison.Ordinal) ? "Trắng thắng" : "Hòa cờ";
-        StatusText.Text=isCheckmate ? $"CHECKMATE · {winner}" : isDraw ? result : result;
+        StatusText.Text=banner;
+        StatusBanner.Background=new SolidColorBrush(isDraw ? Color.FromRgb(54,75,48) : Color.FromRgb(91,42,40));
         StatusDot.Fill=new SolidColorBrush(isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,112,94));
-        if (isCheckmate || bareKings) DrawBoard();
+        if (_losingPlayer.HasValue || bareKings) DrawBoard();
     }
     private void DrawBoard()
     {
         Board.Children.Clear();
         UpdateCoordinates();
-        var kingToTilt = _gameOver && _rules.IsCheckmate ? FindKingSquare(_rules.Game.WhoseTurn) : null;
+        var kingToTilt = _gameOver && _losingPlayer.HasValue ? FindKingSquare(_losingPlayer.Value) : null;
         var kingInCheck = _rules.Game.IsInCheck(_rules.Game.WhoseTurn)
             ? FindKingSquare(_rules.Game.WhoseTurn)
             : null;
@@ -393,6 +399,8 @@ public partial class MainWindow : Window
             var isKing=piece is not null && char.ToLowerInvariant(piece.GetFenCharacter())=='k';
             var background=grayKingSquares && isKing
                 ? new SolidColorBrush(Color.FromRgb(135,139,143))
+                : square==kingToTilt
+                ? new SolidColorBrush(Color.FromRgb(205,72,67))
                 : square==kingInCheck
                 ? new SolidColorBrush(Color.FromRgb(205,72,67))
                 : _selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
