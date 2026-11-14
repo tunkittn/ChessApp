@@ -173,7 +173,7 @@ public partial class MainWindow : Window
                     Width=58, Height=60, HorizontalAlignment=HorizontalAlignment.Center,
                     VerticalAlignment=VerticalAlignment.Center, IsHitTestVisible=false
                 };
-                if (square == kingToTilt) { visual.RenderTransform = new RotateTransform(45); visual.RenderTransformOrigin = new Point(0.5,0.5); }
+                if (square == kingToTilt) { visual.RenderTransform = new RotateTransform(90); visual.RenderTransformOrigin = new Point(0.5,0.5); }
                 content.Children.Add(visual);
             }
             var lightSquare=(row+col)%2==0;
