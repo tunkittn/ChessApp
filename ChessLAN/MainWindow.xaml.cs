@@ -95,6 +95,8 @@ public partial class MainWindow : Window
         _roomCancellation?.Dispose(); _roomCancellation=null;
         _rules.Load(ChessRulesService.InitialFen);
         _isHost=whitePerspective; _blackPerspective=!whitePerspective;
+        ResultBanner.Visibility=Visibility.Collapsed; ResultBannerText.Text="";
+        StatusBanner.Background=new SolidColorBrush(Color.FromRgb(34,37,43));
         GameResultLabel.Text="TRẬN ĐẤU"; GameResultLabel.Foreground=new SolidColorBrush(Color.FromRgb(129,182,76));
         HistoryBox.Clear(); ResignButton.IsEnabled=false;
         _whiteMilliseconds=_blackMilliseconds=GetTimeControlSeconds()*1000L;
@@ -350,9 +352,12 @@ public partial class MainWindow : Window
         var banner=isDraw ? reason : $"{reason} — {(whiteWon ? "WHITE WON" : "BLACK WON")}";
         GameResultLabel.Text=reason;
         GameResultLabel.Foreground=new SolidColorBrush(isCheckmate ? Color.FromRgb(235,112,94) : isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,145,98));
-        StatusText.Text=banner;
+        StatusText.Text="Ván đấu đã kết thúc";
         StatusBanner.Background=new SolidColorBrush(isDraw ? Color.FromRgb(54,75,48) : Color.FromRgb(91,42,40));
         StatusDot.Fill=new SolidColorBrush(isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,112,94));
+        ResultBannerText.Text=banner;
+        ResultBanner.BorderBrush=new SolidColorBrush(isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,112,94));
+        ResultBanner.Visibility=Visibility.Visible;
         if (_losingPlayer.HasValue || bareKings) DrawBoard();
     }
     private void DrawBoard()
