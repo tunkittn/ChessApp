@@ -84,17 +84,13 @@ public partial class MainWindow : Window
             var isWhite=piece.Length>0 && char.IsUpper(_rules.Game.GetPieceAt(new ChessDotNet.Position(square)).GetFenCharacter());
             var glyph=new TextBlock
             {
-                Text=piece, FontFamily=new FontFamily("Segoe UI Symbol"), FontSize=58,
-                FontWeight=FontWeights.Bold, HorizontalAlignment=HorizontalAlignment.Center,
+                Text=piece, FontFamily=new FontFamily("Segoe UI Symbol"), FontSize=60,
+                FontWeight=FontWeights.Normal, HorizontalAlignment=HorizontalAlignment.Center,
                 VerticalAlignment=VerticalAlignment.Center, TextAlignment=TextAlignment.Center,
-                Foreground=isWhite ? new SolidColorBrush(Color.FromRgb(255,252,231)) : new SolidColorBrush(Color.FromRgb(25,29,27)),
-                Effect=new System.Windows.Media.Effects.DropShadowEffect
-                {
-                    Color=isWhite ? Color.FromRgb(21,27,20) : Color.FromRgb(239,237,210),
-                    BlurRadius=2, ShadowDepth=1, Opacity=isWhite ? 0.95 : 0.55
-                }
+                Foreground=isWhite ? new SolidColorBrush(Color.FromRgb(255,253,236)) : new SolidColorBrush(Color.FromRgb(25,29,27)),
+                Effect=isWhite ? new System.Windows.Media.Effects.DropShadowEffect { Color=Color.FromRgb(30,37,25), BlurRadius=0, ShadowDepth=1, Opacity=0.9 } : null
             };
-            var b=new Button{Content=glyph,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=(row+col)%2==0?new SolidColorBrush(Color.FromRgb(238,238,210)):new SolidColorBrush(Color.FromRgb(118,150,86)),Tag=square};
+            var b=new Button{Style=(Style)FindResource("SquareButton"),Content=glyph,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=(row+col)%2==0?new SolidColorBrush(Color.FromRgb(238,238,210)):new SolidColorBrush(Color.FromRgb(118,150,86)),Tag=square};
             b.Click+=Square_Click; Board.Children.Add(b);
         }
     }
