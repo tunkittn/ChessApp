@@ -48,6 +48,8 @@ public partial class MainWindow : Window
     private Player _clockActive = Player.White;
     private int _selectedTimeSeconds=300;
     private Player? _losingPlayer;
+    private string? _lastMoveFrom;
+    private string? _lastMoveTo;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
@@ -89,7 +91,7 @@ public partial class MainWindow : Window
     private async Task ResetForNewSessionAsync(bool whitePerspective)
     {
         _gameStarted=false; _gameOver=false; _waitingForState=false; _clockRunning=false;
-        _selected=null; _legalTargets.Clear(); _sessionId=""; _sequence=0;
+        _selected=null; _legalTargets.Clear(); _sessionId=""; _sequence=0; _lastMoveFrom=null; _lastMoveTo=null;
         _roomCancellation?.Cancel();
         if (_network is not null) { await _network.DisposeAsync(); _network=null; }
         _roomCancellation?.Dispose(); _roomCancellation=null;
@@ -185,6 +187,8 @@ public partial class MainWindow : Window
             if (_blackMilliseconds<=0) { await FinishHostGameAsync("Hết giờ · Trắng thắng"); return; }
             if (_gameOver || _rules.Game.WhoseTurn != Player.Black || !_rules.Move(m.From,m.To,m.Promotion)) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ hoặc chưa đến lượt Đen."}); return; }
             SwitchClockTo(_rules.Game.WhoseTurn);
+            _lastMoveFrom=m.From;
+            _lastMoveTo=m.To;
             _sequence++;
             var result=GetGameResult();
             var moveText=FormatMove(m.From,m.To,result);
@@ -192,13 +196,15 @@ public partial class MainWindow : Window
             UpdateTurnStatus(result);
             if (string.IsNullOrEmpty(result)) PlayMoveSound(isCapture, isCastling);
             if (!string.IsNullOrEmpty(result)) _clockRunning=false;
-            DrawBoard(); await BroadcastStateAsync(moveText,result,isCapture,isCastling);
+            DrawBoard(); await BroadcastStateAsync(moveText,result,isCapture,isCastling,m.From,m.To);
             if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
             return;
         }
         if (m.Command == "STATE" && !_isHost && m.SessionId == _sessionId && m.Sequence == _sequence + 1)
         {
             _sequence=m.Sequence; _rules.Load(m.Fen); _waitingForState=false; _selected=null; _legalTargets.Clear();
+            _lastMoveFrom=m.From;
+            _lastMoveTo=m.To;
             ApplyClockMessage(m);
             AppendMoveHistory(_sequence,m.MoveText);
             UpdateTurnStatus(m.Result);
@@ -208,7 +214,7 @@ public partial class MainWindow : Window
         }
         if (m.Command == "ERROR") { _waitingForState=false; _selected=null; _legalTargets.Clear(); DrawBoard(); MessageBox.Show(m.Text,"Nước đi bị từ chối"); }
     }
-    private async Task BroadcastStateAsync(string moveText, string result, bool isCapture, bool isCastling) => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen,MoveText=moveText,Result=result,IsCapture=isCapture,IsCastling=isCastling,WhiteMilliseconds=_whiteMilliseconds,BlackMilliseconds=_blackMilliseconds,ActiveColor=_clockActive==Player.White?"W":"B"});
+    private async Task BroadcastStateAsync(string moveText, string result, bool isCapture, bool isCastling, string from, string to) => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen,From=from,To=to,MoveText=moveText,Result=result,IsCapture=isCapture,IsCastling=isCastling,WhiteMilliseconds=_whiteMilliseconds,BlackMilliseconds=_blackMilliseconds,ActiveColor=_clockActive==Player.White?"W":"B"});
     private string GetGameResult()
     {
         if (_rules.IsCheckmate) return $"Chiếu hết! {( _rules.Game.WhoseTurn == Player.White ? "Đen" : "Trắng")} thắng.";
@@ -229,6 +235,11 @@ public partial class MainWindow : Window
         Time5Button.Background=seconds==300?selectedBrush:idleBrush; Time5Button.Foreground=seconds==300?Brushes.Black:Brushes.White;
         Time1Button.Background=seconds==60?selectedBrush:idleBrush; Time1Button.Foreground=seconds==60?Brushes.Black:Brushes.White;
         _whiteMilliseconds=_blackMilliseconds=seconds*1000L; RefreshClockLabels();
+    }
+    private void DismissResultBanner_Click(object sender,RoutedEventArgs e)
+    {
+        // Dismiss only the visual notification; the completed game stays completed.
+        ResultBanner.Visibility=Visibility.Collapsed;
     }
     private void StartClock(int seconds)
     {
@@ -414,7 +425,9 @@ public partial class MainWindow : Window
                 ? new SolidColorBrush(Color.FromRgb(205,72,67))
                 : square==kingInCheck
                 ? new SolidColorBrush(Color.FromRgb(205,72,67))
-                : _selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
+                : _selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95))
+                : square==_lastMoveFrom || square==_lastMoveTo ? new SolidColorBrush(Color.FromRgb(154,204,239))
+                : new SolidColorBrush(squareColor);
             var b=new Button{Style=(Style)FindResource("SquareButton"),Content=content,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=background,Tag=square};
             b.Click+=Square_Click; Board.Children.Add(b);
         }
@@ -466,13 +479,15 @@ public partial class MainWindow : Window
             if (!_rules.Move(from,square,promotion.ToString())) { _selected=null; _legalTargets.Clear(); DrawBoard(); return; }
             _sequence++; _selected=null; _legalTargets.Clear();
             SwitchClockTo(_rules.Game.WhoseTurn);
+            _lastMoveFrom=from;
+            _lastMoveTo=square;
             var result=GetGameResult();
             var moveText=FormatMove(from,square,result);
             AppendMoveHistory(_sequence,moveText); UpdateTurnStatus(result);
             if (string.IsNullOrEmpty(result)) PlayMoveSound(isCapture, isCastling);
             DrawBoard();
             if (!string.IsNullOrEmpty(result)) _clockRunning=false;
-            await BroadcastStateAsync(moveText,result,isCapture,isCastling);
+            await BroadcastStateAsync(moveText,result,isCapture,isCastling,from,square);
             if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
         }
         else
