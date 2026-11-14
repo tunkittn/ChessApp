@@ -46,6 +46,7 @@ public partial class MainWindow : Window
     private long _clockTimestamp;
     private long _lastClockSync;
     private Player _clockActive = Player.White;
+    private int _selectedTimeSeconds=300;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
@@ -53,7 +54,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _clockTimer.Tick += ClockTimer_Tick;
         _clockTimer.Start();
-        _whiteMilliseconds=_blackMilliseconds=GetTimeControlSeconds()*1000L;
+        _whiteMilliseconds=_blackMilliseconds=_selectedTimeSeconds*1000L;
         RefreshClockLabels();
         UpdateCoordinates();
         DrawBoard();
@@ -63,9 +64,9 @@ public partial class MainWindow : Window
     {
         try
         {
+            await ResetForNewSessionAsync(true);
             _roomCancellation = new CancellationTokenSource(); _network = CreateNetwork(); _isHost = true;
             _blackPerspective=false;
-            TimeControlBox.IsEnabled=false;
             var lanAddresses=GetLanIpv4Addresses();
             RoomHintText.Text=lanAddresses.Length == 0
                 ? "Không tìm thấy IPv4 LAN. Hãy kiểm tra Wi‑Fi/Ethernet đang bật. Cổng TCP: " + PortBox.Text
@@ -75,14 +76,28 @@ public partial class MainWindow : Window
             SetWaiting(false, "Đối thủ đã kết nối · chờ xác nhận");
         }
         catch (OperationCanceledException) { SetWaiting(false, "Đã hủy tạo phòng"); }
-        catch (SocketException ex) { TimeControlBox.IsEnabled=true; SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
-        catch (Exception ex) { TimeControlBox.IsEnabled=true; SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
+        catch (SocketException ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
+        catch (Exception ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
     }
     private async void Join_Click(object sender, RoutedEventArgs e)
     {
-        try { TimeControlBox.IsEnabled=false; SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
-        catch (SocketException ex) { TimeControlBox.IsEnabled=true; SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
-        catch (Exception ex) { TimeControlBox.IsEnabled=true; SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
+        try { await ResetForNewSessionAsync(false); SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
+        catch (SocketException ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
+        catch (Exception ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
+    }
+    private async Task ResetForNewSessionAsync(bool whitePerspective)
+    {
+        _gameStarted=false; _gameOver=false; _waitingForState=false; _clockRunning=false;
+        _selected=null; _legalTargets.Clear(); _sessionId=""; _sequence=0;
+        _roomCancellation?.Cancel();
+        if (_network is not null) { await _network.DisposeAsync(); _network=null; }
+        _roomCancellation?.Dispose(); _roomCancellation=null;
+        _rules.Load(ChessRulesService.InitialFen);
+        _isHost=whitePerspective; _blackPerspective=!whitePerspective;
+        GameResultLabel.Text="TRẬN ĐẤU"; GameResultLabel.Foreground=new SolidColorBrush(Color.FromRgb(129,182,76));
+        HistoryBox.Clear(); ResignButton.IsEnabled=false;
+        _whiteMilliseconds=_blackMilliseconds=GetTimeControlSeconds()*1000L;
+        UpdateCoordinates(); RefreshClockLabels(); DrawBoard();
     }
     private static string[] GetLanIpv4Addresses() => NetworkInterface.GetAllNetworkInterfaces()
         .Where(adapter => adapter.OperationalStatus == OperationalStatus.Up && adapter.NetworkInterfaceType is NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.Ethernet)
@@ -195,7 +210,18 @@ public partial class MainWindow : Window
         return "";
     }
 
-    private int GetTimeControlSeconds() => TimeControlBox.SelectedItem is ComboBoxItem item && int.TryParse(item.Tag?.ToString(),out var seconds) ? seconds : 300;
+    private int GetTimeControlSeconds() => _selectedTimeSeconds;
+    private void TimeControl_Click(object sender,RoutedEventArgs e)
+    {
+        if (_gameStarted || sender is not Button button || !int.TryParse(button.Tag?.ToString(),out var seconds)) return;
+        _selectedTimeSeconds=seconds;
+        var selectedBrush=new SolidColorBrush(Color.FromRgb(129,182,76));
+        var idleBrush=new SolidColorBrush(Color.FromRgb(52,57,65));
+        Time10Button.Background=seconds==600?selectedBrush:idleBrush; Time10Button.Foreground=seconds==600?Brushes.Black:Brushes.White;
+        Time5Button.Background=seconds==300?selectedBrush:idleBrush; Time5Button.Foreground=seconds==300?Brushes.Black:Brushes.White;
+        Time1Button.Background=seconds==60?selectedBrush:idleBrush; Time1Button.Foreground=seconds==60?Brushes.Black:Brushes.White;
+        _whiteMilliseconds=_blackMilliseconds=seconds*1000L; RefreshClockLabels();
+    }
     private void StartClock(int seconds)
     {
         var milliseconds=Math.Clamp(seconds,60,600)*1000L;
@@ -227,12 +253,14 @@ public partial class MainWindow : Window
     }
     private void RefreshClockLabels()
     {
-        WhiteClockText.Text=$"TRẮNG  {FormatClock(_whiteMilliseconds)}";
-        BlackClockText.Text=$"ĐEN  {FormatClock(_blackMilliseconds)}";
+        var topColor=_blackPerspective?Player.White:Player.Black;
+        var bottomColor=_blackPerspective?Player.Black:Player.White;
+        TopClockText.Text=$"{(topColor==Player.White?"TRẮNG":"ĐEN")}  {FormatClock(topColor==Player.White?_whiteMilliseconds:_blackMilliseconds)}";
+        BottomClockText.Text=$"{(bottomColor==Player.White?"TRẮNG":"ĐEN")}  {FormatClock(bottomColor==Player.White?_whiteMilliseconds:_blackMilliseconds)}";
         var activeBrush=new SolidColorBrush(Color.FromRgb(129,182,76));
         var idleBrush=new SolidColorBrush(Color.FromRgb(25,28,33));
-        WhiteClockBorder.Background=_clockRunning && _clockActive==Player.White ? activeBrush : idleBrush;
-        BlackClockBorder.Background=_clockRunning && _clockActive==Player.Black ? activeBrush : idleBrush;
+        TopClockBorder.Background=_clockRunning && _clockActive==topColor ? activeBrush : idleBrush;
+        BottomClockBorder.Background=_clockRunning && _clockActive==bottomColor ? activeBrush : idleBrush;
     }
     private static string FormatClock(long milliseconds)
     {
@@ -459,11 +487,6 @@ public partial class MainWindow : Window
             if (piece is not null && piece.Owner==color && char.ToLowerInvariant(piece.GetFenCharacter())=='k') return square;
         }
         return null;
-    }
-    private void TimeControl_SelectionChanged(object sender,SelectionChangedEventArgs e)
-    {
-        if (_gameStarted || WhiteClockText is null) return;
-        _whiteMilliseconds=_blackMilliseconds=GetTimeControlSeconds()*1000L; RefreshClockLabels();
     }
     protected override async void OnClosed(EventArgs e){_closingWindow=true;_clockTimer.Stop();_roomCancellation?.Cancel();if(_network is not null)await _network.DisposeAsync();base.OnClosed(e);}
 }
