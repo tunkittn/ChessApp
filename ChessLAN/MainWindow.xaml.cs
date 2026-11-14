@@ -49,6 +49,7 @@ public partial class MainWindow : Window
     private int _selectedTimeSeconds=300;
     private Player? _losingPlayer;
     private string? _lastMoveFrom;
+    private string? _lastMoveTo;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
@@ -90,7 +91,7 @@ public partial class MainWindow : Window
     private async Task ResetForNewSessionAsync(bool whitePerspective)
     {
         _gameStarted=false; _gameOver=false; _waitingForState=false; _clockRunning=false;
-        _selected=null; _legalTargets.Clear(); _sessionId=""; _sequence=0; _lastMoveFrom=null;
+        _selected=null; _legalTargets.Clear(); _sessionId=""; _sequence=0; _lastMoveFrom=null; _lastMoveTo=null;
         _roomCancellation?.Cancel();
         if (_network is not null) { await _network.DisposeAsync(); _network=null; }
         _roomCancellation?.Dispose(); _roomCancellation=null;
@@ -184,6 +185,7 @@ public partial class MainWindow : Window
             if (_gameOver || _rules.Game.WhoseTurn != Player.Black || !_rules.Move(m.From,m.To,m.Promotion)) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ hoặc chưa đến lượt Đen."}); return; }
             SwitchClockTo(_rules.Game.WhoseTurn);
             _lastMoveFrom=m.From;
+            _lastMoveTo=m.To;
             _sequence++;
             var result=GetGameResult();
             var moveText=FormatMove(m.From,m.To,result);
@@ -199,6 +201,7 @@ public partial class MainWindow : Window
         {
             _sequence=m.Sequence; _rules.Load(m.Fen); _waitingForState=false; _selected=null; _legalTargets.Clear();
             _lastMoveFrom=m.From;
+            _lastMoveTo=m.To;
             ApplyClockMessage(m);
             AppendMoveHistory(_sequence,m.MoveText);
             UpdateTurnStatus(m.Result); PlayMoveSound(m.IsCapture); DrawBoard();
@@ -417,7 +420,7 @@ public partial class MainWindow : Window
                 : square==kingInCheck
                 ? new SolidColorBrush(Color.FromRgb(205,72,67))
                 : _selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95))
-                : square==_lastMoveFrom ? new SolidColorBrush(Color.FromRgb(154,204,239))
+                : square==_lastMoveFrom || square==_lastMoveTo ? new SolidColorBrush(Color.FromRgb(154,204,239))
                 : new SolidColorBrush(squareColor);
             var b=new Button{Style=(Style)FindResource("SquareButton"),Content=content,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=background,Tag=square};
             b.Click+=Square_Click; Board.Children.Add(b);
@@ -470,6 +473,7 @@ public partial class MainWindow : Window
             _sequence++; _selected=null; _legalTargets.Clear();
             SwitchClockTo(_rules.Game.WhoseTurn);
             _lastMoveFrom=from;
+            _lastMoveTo=square;
             var result=GetGameResult();
             var moveText=FormatMove(from,square,result);
             AppendMoveHistory(_sequence,moveText); UpdateTurnStatus(result); PlayMoveSound(isCapture); DrawBoard();
