@@ -1,5 +1,7 @@
 using ChessLAN.Services;
 using ChessLAN.Controls;
+using System.Net;
+using System.Net.Sockets;
 
 namespace ChessLAN.Tests;
 
@@ -120,5 +122,22 @@ public sealed class ChessRulesTests
         var game = new ChessRulesService();
         game.Load("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
         Assert.True(game.IsBareKings);
+    }
+
+    [Fact]
+    public async Task DisposingWaitingHostCancelsAcceptCleanly()
+    {
+        using var portProbe=new TcpListener(IPAddress.Loopback,0);
+        portProbe.Start();
+        var port=((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        var service=new TcpChessService();
+        var hostTask=service.HostAsync(port);
+        await Task.Delay(75);
+        await service.DisposeAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>hostTask);
+        await service.DisposeAsync();
     }
 }

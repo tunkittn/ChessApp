@@ -13,39 +13,52 @@ public sealed class TcpChessService : IAsyncDisposable
     private TcpClient? _client;
     private StreamReader? _reader;
     private StreamWriter? _writer;
+    private Task? _connectionTask;
+    private Task? _receiveTask;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly CancellationTokenSource _stop = new();
+    private bool _disposed;
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     public event Action<NetworkMessage>? MessageReceived;
     public event Action<string>? StatusChanged;
     public bool IsHost { get; private set; }
     public string SessionId { get; private set; } = "";
 
-    public async Task HostAsync(int port, CancellationToken token = default)
+    public Task HostAsync(int port)
     {
         IsHost = true;
         SessionId = Guid.NewGuid().ToString("N");
+        _connectionTask = HostCoreAsync(port);
+        return _connectionTask;
+    }
+
+    private async Task HostCoreAsync(int port)
+    {
         _listener = new TcpListener(IPAddress.Any, port);
         _listener.Start(1);
         StatusChanged?.Invoke($"Đang chờ đối thủ tại cổng {port}…");
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token);
-        _client = await _listener.AcceptTcpClientAsync(linked.Token);
+        _client = await _listener.AcceptTcpClientAsync(_stop.Token);
         _listener.Stop(); _listener = null;
         SetStreams(_client);
         StatusChanged?.Invoke("Đối thủ đã kết nối.");
         // The UI sends WELCOME after reading HELLO, including the chosen time control.
-        _ = ReceiveLoopAsync(_stop.Token);
+        _receiveTask = ReceiveLoopAsync(_stop.Token);
     }
 
-    public async Task JoinAsync(string host, int port, string nickname, CancellationToken token = default)
+    public Task JoinAsync(string host, int port, string nickname)
     {
         IsHost = false;
+        _connectionTask = JoinCoreAsync(host, port, nickname);
+        return _connectionTask;
+    }
+
+    private async Task JoinCoreAsync(string host, int port, string nickname)
+    {
         _client = new TcpClient();
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token);
-        await _client.ConnectAsync(host, port, linked.Token);
+        await _client.ConnectAsync(host, port, _stop.Token);
         SetStreams(_client);
         await SendAsync(new NetworkMessage { Command = "HELLO", Version = 1, Name = nickname });
-        _ = ReceiveLoopAsync(_stop.Token);
+        _receiveTask = ReceiveLoopAsync(_stop.Token);
     }
 
     private void SetStreams(TcpClient client)
@@ -86,7 +99,21 @@ public sealed class TcpChessService : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
         _stop.Cancel(); _listener?.Stop(); _client?.Close();
+        if (_connectionTask is not null)
+        {
+            try { await _connectionTask; }
+            catch (OperationCanceledException) { }
+            catch (SocketException) when (_stop.IsCancellationRequested) { }
+            catch (ObjectDisposedException) when (_stop.IsCancellationRequested) { }
+            catch (IOException) when (_stop.IsCancellationRequested) { }
+        }
+        if (_receiveTask is not null)
+        {
+            try { await _receiveTask; } catch (OperationCanceledException) { }
+        }
         _reader?.Dispose();
         _writer?.Dispose();
         _client?.Dispose(); _stop.Dispose(); _writeLock.Dispose();

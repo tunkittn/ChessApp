@@ -52,7 +52,8 @@ public partial class MainWindow : Window
     private string? _lastMoveFrom;
     private string? _lastMoveTo;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
-    private CancellationTokenSource? _roomCancellation;
+    private bool _waitingForOpponent;
+    private bool _connectionPending;
     public MainWindow()
     {
         InitializeComponent();
@@ -71,41 +72,37 @@ public partial class MainWindow : Window
         try
         {
             await ResetForNewSessionAsync(true);
-            var roomCancellation=new CancellationTokenSource();
-            _roomCancellation=roomCancellation; _network = CreateNetwork(); _isHost = true;
+            _network = CreateNetwork(); _isHost = true;
             _blackPerspective=false;
             var lanAddresses=GetLanIpv4Addresses();
             RoomHintText.Text=lanAddresses.Length == 0
                 ? "Không tìm thấy IPv4 LAN. Hãy kiểm tra Wi‑Fi/Ethernet đang bật. Cổng TCP: " + PortBox.Text
                 : $"IP LAN của máy tạo phòng: {string.Join(", ",lanAddresses)}\nMáy kia nhập một IP này và cổng {PortBox.Text}. Không dùng 127.0.0.1 khi chơi giữa hai máy.";
-            SetWaiting(true, $"Đang chờ đối thủ · cổng {PortBox.Text}");
-            await _network.HostAsync(int.Parse(PortBox.Text), roomCancellation.Token);
-            SetWaiting(false, "Đối thủ đã kết nối · chờ xác nhận");
+            _waitingForOpponent=true; SetWaiting(true, $"Đang chờ đối thủ · cổng {PortBox.Text}");
+            await _network.HostAsync(int.Parse(PortBox.Text));
+            _waitingForOpponent=false; _connectionPending=true; SetWaiting(false, "Đối thủ đã kết nối · chờ xác nhận");
         }
-        catch (OperationCanceledException) { SetWaiting(false, "Đã hủy tạo phòng"); }
-        catch (SocketException ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
-        catch (Exception ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
-        finally { _roomActionBusy=false; }
+        catch (OperationCanceledException) { _waitingForOpponent=false; _connectionPending=false; SetWaiting(false, "Đã hủy tạo phòng"); }
+        catch (SocketException ex) { _waitingForOpponent=false; _connectionPending=false; SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
+        catch (Exception ex) { _waitingForOpponent=false; _connectionPending=false; SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.ToString(), "Không thể tạo phòng"); }
+        finally { _roomActionBusy=false; RefreshActionControls(); }
     }
     private async void Join_Click(object sender, RoutedEventArgs e)
     {
         if (_roomActionBusy) return;
         _roomActionBusy=true;
-        try { await ResetForNewSessionAsync(false); SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
-        catch (SocketException ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
-        catch (Exception ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
-        finally { _roomActionBusy=false; }
+        try { await ResetForNewSessionAsync(false); _connectionPending=true; SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
+        catch (SocketException ex) { _connectionPending=false; SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
+        catch (Exception ex) { _connectionPending=false; SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.ToString(), "Không thể kết nối"); }
+        finally { _roomActionBusy=false; RefreshActionControls(); }
     }
     private async Task ResetForNewSessionAsync(bool whitePerspective)
     {
-        _gameStarted=false; _gameOver=false; _waitingForState=false; _clockRunning=false;
+        _gameStarted=false; _gameOver=false; _waitingForState=false; _clockRunning=false; _waitingForOpponent=false; _connectionPending=false;
         _selected=null; _legalTargets.Clear(); _sessionId=""; _sequence=0; _lastMoveFrom=null; _lastMoveTo=null;
-        var previousCancellation=_roomCancellation;
         var previousNetwork=_network;
-        _roomCancellation=null; _network=null;
-        try { previousCancellation?.Cancel(); } catch (ObjectDisposedException) { }
+        _network=null;
         if (previousNetwork is not null) await previousNetwork.DisposeAsync();
-        previousCancellation?.Dispose();
         _rules.Load(ChessRulesService.InitialFen);
         _isHost=whitePerspective; _blackPerspective=!whitePerspective;
         ResultBanner.Visibility=Visibility.Collapsed; ResultBannerText.Text="";
@@ -131,11 +128,28 @@ public partial class MainWindow : Window
         SocketError.NetworkUnreachable or SocketError.HostUnreachable => $"Không tới được máy chủ. Hai máy cần nằm trong mạng có thể liên lạc trực tiếp.\n\n{ex.Message}",
         _ => ex.Message
     };
-    private void Cancel_Click(object sender, RoutedEventArgs e) { _roomCancellation?.Cancel(); _ = _network?.DisposeAsync(); }
+    private async void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_waitingForOpponent) return;
+        _waitingForOpponent=false;
+        var service=_network; _network=null;
+        if (service is not null) await service.DisposeAsync();
+        SetWaiting(false,"Đã hủy tạo phòng");
+    }
     private void SetWaiting(bool waiting, string text)
     {
         StatusText.Text = text; StatusDot.Fill = waiting ? new SolidColorBrush(Color.FromRgb(129,182,76)) : new SolidColorBrush(Color.FromRgb(133,139,148));
-        HostButton.IsEnabled = JoinButton.IsEnabled = !waiting; CancelButton.Visibility = waiting ? Visibility.Visible : Visibility.Collapsed;
+        RefreshActionControls();
+    }
+    private void RefreshActionControls()
+    {
+        var playing=_gameStarted && !_gameOver;
+        var locked=_roomActionBusy || _waitingForOpponent || _connectionPending || playing;
+        HostButton.IsEnabled=JoinButton.IsEnabled=NicknameBox.IsEnabled=HostBox.IsEnabled=PortBox.IsEnabled=!locked;
+        Time10Button.IsEnabled=Time5Button.IsEnabled=Time1Button.IsEnabled=!locked;
+        ResignButton.IsEnabled=playing;
+        CancelButton.Visibility=_waitingForOpponent ? Visibility.Visible : Visibility.Collapsed;
+        CancelButton.IsEnabled=_waitingForOpponent;
     }
     private TcpChessService CreateNetwork()
     {
@@ -161,8 +175,10 @@ public partial class MainWindow : Window
         if (m.Command == "HELLO" && _isHost)
         {
             _blackPerspective=false;
+            _waitingForOpponent=false; _connectionPending=false;
             _sessionId = _network!.SessionId;
             _gameStarted=true; ResignButton.IsEnabled=true;
+            RefreshActionControls();
             _sound.PlayStart();
             StartClock(GetTimeControlSeconds());
             await _network.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_sessionId, Name=NicknameBox.Text, Fen=_rules.Fen, TimeControlSeconds=GetTimeControlSeconds(), WhiteMilliseconds=_whiteMilliseconds, BlackMilliseconds=_blackMilliseconds, ActiveColor="W" });
@@ -170,8 +186,10 @@ public partial class MainWindow : Window
         }
         if (m.Command == "WELCOME" && !_isHost && !string.IsNullOrWhiteSpace(m.SessionId))
         {
+            _connectionPending=false; _waitingForOpponent=false;
             _blackPerspective=true; _sessionId=m.SessionId; _rules.Load(m.Fen); _sequence=0; _waitingForState=false;
             _gameStarted=true; ResignButton.IsEnabled=true; StartClock(m.TimeControlSeconds); ApplyClockMessage(m);
+            RefreshActionControls();
             _sound.PlayStart();
             UpdateCoordinates();
             StatusText.Text=$"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
@@ -386,6 +404,7 @@ public partial class MainWindow : Window
         ResultBannerText.Text=banner;
         ResultBanner.BorderBrush=new SolidColorBrush(isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,112,94));
         ResultBanner.Visibility=Visibility.Visible;
+        RefreshActionControls();
         if (_losingPlayer.HasValue || bareKings) DrawBoard();
     }
     private void DrawBoard()
@@ -453,7 +472,7 @@ public partial class MainWindow : Window
     }
     private async void Square_Click(object sender,RoutedEventArgs e)
     {
-        if (_waitingForState || _gameOver) return;
+        if (!_gameStarted || _waitingForState || _gameOver) return;
         var square=(string)((Button)sender).Tag;
         var localColor=_isHost ? Player.White : Player.Black;
         if (_network is null || _rules.Game.WhoseTurn != localColor) return;
@@ -545,5 +564,5 @@ public partial class MainWindow : Window
         }
         return null;
     }
-    protected override async void OnClosed(EventArgs e){_closingWindow=true;_clockTimer.Stop();_roomCancellation?.Cancel();if(_network is not null)await _network.DisposeAsync();base.OnClosed(e);}
+    protected override async void OnClosed(EventArgs e){_closingWindow=true;_clockTimer.Stop();if(_network is not null)await _network.DisposeAsync();base.OnClosed(e);}
 }
