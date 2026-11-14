@@ -40,6 +40,7 @@ public partial class MainWindow : Window
     private bool _blackPerspective;
     private bool _gameStarted;
     private bool _closingWindow;
+    private bool _roomActionBusy;
     private bool _clockRunning;
     private long _whiteMilliseconds;
     private long _blackMilliseconds;
@@ -65,36 +66,46 @@ public partial class MainWindow : Window
 
     private async void Host_Click(object sender, RoutedEventArgs e)
     {
+        if (_roomActionBusy) return;
+        _roomActionBusy=true;
         try
         {
             await ResetForNewSessionAsync(true);
-            _roomCancellation = new CancellationTokenSource(); _network = CreateNetwork(); _isHost = true;
+            var roomCancellation=new CancellationTokenSource();
+            _roomCancellation=roomCancellation; _network = CreateNetwork(); _isHost = true;
             _blackPerspective=false;
             var lanAddresses=GetLanIpv4Addresses();
             RoomHintText.Text=lanAddresses.Length == 0
                 ? "Không tìm thấy IPv4 LAN. Hãy kiểm tra Wi‑Fi/Ethernet đang bật. Cổng TCP: " + PortBox.Text
                 : $"IP LAN của máy tạo phòng: {string.Join(", ",lanAddresses)}\nMáy kia nhập một IP này và cổng {PortBox.Text}. Không dùng 127.0.0.1 khi chơi giữa hai máy.";
             SetWaiting(true, $"Đang chờ đối thủ · cổng {PortBox.Text}");
-            await _network.HostAsync(int.Parse(PortBox.Text), _roomCancellation.Token);
+            await _network.HostAsync(int.Parse(PortBox.Text), roomCancellation.Token);
             SetWaiting(false, "Đối thủ đã kết nối · chờ xác nhận");
         }
         catch (OperationCanceledException) { SetWaiting(false, "Đã hủy tạo phòng"); }
         catch (SocketException ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
         catch (Exception ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
+        finally { _roomActionBusy=false; }
     }
     private async void Join_Click(object sender, RoutedEventArgs e)
     {
+        if (_roomActionBusy) return;
+        _roomActionBusy=true;
         try { await ResetForNewSessionAsync(false); SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
         catch (SocketException ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
         catch (Exception ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
+        finally { _roomActionBusy=false; }
     }
     private async Task ResetForNewSessionAsync(bool whitePerspective)
     {
         _gameStarted=false; _gameOver=false; _waitingForState=false; _clockRunning=false;
         _selected=null; _legalTargets.Clear(); _sessionId=""; _sequence=0; _lastMoveFrom=null; _lastMoveTo=null;
-        _roomCancellation?.Cancel();
-        if (_network is not null) { await _network.DisposeAsync(); _network=null; }
-        _roomCancellation?.Dispose(); _roomCancellation=null;
+        var previousCancellation=_roomCancellation;
+        var previousNetwork=_network;
+        _roomCancellation=null; _network=null;
+        try { previousCancellation?.Cancel(); } catch (ObjectDisposedException) { }
+        if (previousNetwork is not null) await previousNetwork.DisposeAsync();
+        previousCancellation?.Dispose();
         _rules.Load(ChessRulesService.InitialFen);
         _isHost=whitePerspective; _blackPerspective=!whitePerspective;
         ResultBanner.Visibility=Visibility.Collapsed; ResultBannerText.Text="";
