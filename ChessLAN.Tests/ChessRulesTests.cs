@@ -64,4 +64,26 @@ public sealed class ChessRulesTests
 
         Assert.False(game.Move("e2", "d2"));
     }
+
+    [Fact]
+    public void FoolsmatePositionIsDetectedAsCheckmate()
+    {
+        var game = new ChessRulesService();
+        game.Load("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3");
+
+        Assert.True(game.IsCheckmate);
+        Assert.False(game.IsStalemate);
+    }
+
+    [Fact]
+    public void FoolsmateSequenceEndsInCheckmate()
+    {
+        var game = new ChessRulesService();
+
+        Assert.True(game.Move("f2", "f3"));
+        Assert.True(game.Move("e7", "e5"));
+        Assert.True(game.Move("g2", "g4"));
+        Assert.True(game.Move("d8", "h4"));
+        Assert.True(game.IsCheckmate);
+    }
 }

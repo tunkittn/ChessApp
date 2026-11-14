@@ -12,4 +12,6 @@ public sealed class NetworkMessage
     public string To { get; set; } = "";
     public string Promotion { get; set; } = "";
     public string Text { get; set; } = "";
+    public string MoveText { get; set; } = "";
+    public string Result { get; set; } = "";
 }

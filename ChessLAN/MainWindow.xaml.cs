@@ -27,6 +27,7 @@ public partial class MainWindow : Window
     private int _sequence;
     private bool _isHost;
     private bool _waitingForState;
+    private bool _gameOver;
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
     {
@@ -41,13 +42,14 @@ public partial class MainWindow : Window
             _roomCancellation = new CancellationTokenSource(); _network = CreateNetwork(); _isHost = true;
             SetWaiting(true, $"Đang chờ đối thủ · cổng {PortBox.Text}");
             await _network.HostAsync(int.Parse(PortBox.Text), NicknameBox.Text, _roomCancellation.Token);
+            SetWaiting(false, "Đối thủ đã kết nối · chờ xác nhận");
         }
         catch (OperationCanceledException) { SetWaiting(false, "Đã hủy tạo phòng"); }
         catch (Exception ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
     }
     private async void Join_Click(object sender, RoutedEventArgs e)
     {
-        try { SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); }
+        try { SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
         catch (Exception ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
     }
     private void Cancel_Click(object sender, RoutedEventArgs e) { _roomCancellation?.Cancel(); _ = _network?.DisposeAsync(); }
@@ -63,12 +65,12 @@ public partial class MainWindow : Window
         service.MessageReceived += m => Dispatcher.Invoke(() => Receive(m));
         return service;
     }
-    private void Receive(NetworkMessage m)
+    private async void Receive(NetworkMessage m)
     {
         if (m.Command == "HELLO" && _isHost)
         {
             _sessionId = _network!.SessionId;
-            _ = _network.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_sessionId, Name=NicknameBox.Text, Fen=_rules.Fen });
+            await _network.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_sessionId, Name=NicknameBox.Text, Fen=_rules.Fen });
             StatusText.Text = $"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
         }
         if (m.Command == "WELCOME" && !_isHost && !string.IsNullOrWhiteSpace(m.SessionId))
@@ -79,19 +81,57 @@ public partial class MainWindow : Window
         if (m.Command == "MOVE" && _isHost && m.Sequence == _sequence + 1)
         {
             if (m.SessionId != _sessionId) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Sai phiên chơi."}); return; }
-            if (_rules.Game.WhoseTurn != Player.Black || !_rules.Move(m.From,m.To,m.Promotion)) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ hoặc chưa đến lượt Đen."}); return; }
-            _sequence++; StatusText.Text=$"Đang đấu · lượt Trắng"; DrawBoard(); _=BroadcastStateAsync();
-            HistoryBox.AppendText($"{_sequence}. {m.From}–{m.To}\n");
+            if (_gameOver || _rules.Game.WhoseTurn != Player.Black || !_rules.Move(m.From,m.To,m.Promotion)) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ hoặc chưa đến lượt Đen."}); return; }
+            _sequence++;
+            var result=GetGameResult();
+            var moveText=FormatMove(m.From,m.To,result);
+            AppendMoveHistory(_sequence,moveText);
+            UpdateTurnStatus(result);
+            DrawBoard(); await BroadcastStateAsync(moveText,result);
+            if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
             return;
         }
         if (m.Command == "STATE" && !_isHost && m.SessionId == _sessionId && m.Sequence == _sequence + 1)
         {
             _sequence=m.Sequence; _rules.Load(m.Fen); _waitingForState=false; _selected=null; _legalTargets.Clear();
-            StatusText.Text=$"Đang đấu · lượt {(_rules.Game.WhoseTurn == Player.White ? "Trắng" : "Đen")}"; DrawBoard();
+            AppendMoveHistory(_sequence,m.MoveText);
+            UpdateTurnStatus(m.Result); DrawBoard();
+            if (!string.IsNullOrEmpty(m.Result)) ShowGameOver(m.Result);
         }
         if (m.Command == "ERROR") { _waitingForState=false; _selected=null; _legalTargets.Clear(); DrawBoard(); MessageBox.Show(m.Text,"Nước đi bị từ chối"); }
     }
-    private async Task BroadcastStateAsync() => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen});
+    private async Task BroadcastStateAsync(string moveText, string result) => await _network!.SendAsync(new NetworkMessage{Command="STATE",SessionId=_network.SessionId,Sequence=_sequence,Fen=_rules.Fen,MoveText=moveText,Result=result});
+    private string GetGameResult()
+    {
+        if (_rules.IsCheckmate) return $"Chiếu hết! {( _rules.Game.WhoseTurn == Player.White ? "Đen" : "Trắng")} thắng.";
+        if (_rules.IsStalemate) return "Hòa cờ do hết nước đi hợp lệ.";
+        if (_rules.Game.IsDraw()) return "Ván cờ hòa.";
+        return "";
+    }
+    private string FormatMove(string from, string to, string result)
+    {
+        if (result.StartsWith("Chiếu hết", StringComparison.Ordinal)) return $"{from}–{to} #";
+        if (_rules.Game.IsInCheck(_rules.Game.WhoseTurn)) return $"{from}–{to} +";
+        return $"{from}–{to}";
+    }
+    private void AppendMoveHistory(int sequence, string moveText)
+    {
+        if (string.IsNullOrWhiteSpace(moveText)) return;
+        var prefix=sequence % 2 == 1 ? $"{(sequence+1)/2}. " : "   ";
+        HistoryBox.AppendText(prefix+moveText+(sequence % 2 == 0 ? Environment.NewLine : "    "));
+        HistoryBox.ScrollToEnd();
+    }
+    private void UpdateTurnStatus(string result)
+    {
+        if (!string.IsNullOrEmpty(result)) { StatusText.Text="Ván đấu đã kết thúc"; return; }
+        var side=_rules.Game.WhoseTurn == Player.White ? "Trắng" : "Đen";
+        StatusText.Text=$"Đang đấu · lượt {side}{(_rules.Game.IsInCheck(_rules.Game.WhoseTurn) ? " · đang bị chiếu" : "")}";
+    }
+    private void ShowGameOver(string result)
+    {
+        if (_gameOver) return;
+        _gameOver=true; MessageBox.Show(this,result,"Kết thúc ván",MessageBoxButton.OK,MessageBoxImage.Information);
+    }
     private void DrawBoard()
     {
         Board.Children.Clear();
@@ -132,7 +172,7 @@ public partial class MainWindow : Window
     }
     private async void Square_Click(object sender,RoutedEventArgs e)
     {
-        if (_waitingForState) return;
+        if (_waitingForState || _gameOver) return;
         var square=(string)((Button)sender).Tag;
         var localColor=_isHost ? Player.White : Player.Black;
         if (_network is null || _rules.Game.WhoseTurn != localColor) return;
@@ -155,9 +195,11 @@ public partial class MainWindow : Window
         {
             if (!_rules.Move(from,square)) { _selected=null; _legalTargets.Clear(); DrawBoard(); return; }
             _sequence++; _selected=null; _legalTargets.Clear(); DrawBoard();
-            HistoryBox.AppendText($"{_sequence}. {from}–{square}\n");
-            StatusText.Text=$"Đang đấu · lượt Đen";
-            await BroadcastStateAsync();
+            var result=GetGameResult();
+            var moveText=FormatMove(from,square,result);
+            AppendMoveHistory(_sequence,moveText); UpdateTurnStatus(result);
+            await BroadcastStateAsync(moveText,result);
+            if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
         }
         else
         {
