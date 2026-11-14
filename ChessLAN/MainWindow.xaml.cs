@@ -13,6 +13,9 @@ using ChessLAN.Models;
 using ChessLAN.Controls;
 using ChessLAN.Views;
 using ChessDotNet;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 
 namespace ChessLAN;
 
@@ -31,10 +34,12 @@ public partial class MainWindow : Window
     private bool _isHost;
     private bool _waitingForState;
     private bool _gameOver;
+    private bool _blackPerspective;
     private CancellationTokenSource? _roomCancellation;
     public MainWindow()
     {
         InitializeComponent();
+        UpdateCoordinates();
         DrawBoard();
     }
 
@@ -43,18 +48,40 @@ public partial class MainWindow : Window
         try
         {
             _roomCancellation = new CancellationTokenSource(); _network = CreateNetwork(); _isHost = true;
+            var lanAddresses=GetLanIpv4Addresses();
+            RoomHintText.Text=lanAddresses.Length == 0
+                ? "Không tìm thấy IPv4 LAN. Hãy kiểm tra Wi‑Fi/Ethernet đang bật. Cổng TCP: " + PortBox.Text
+                : $"IP LAN của máy tạo phòng: {string.Join(", ",lanAddresses)}\nMáy kia nhập một IP này và cổng {PortBox.Text}. Không dùng 127.0.0.1 khi chơi giữa hai máy.";
             SetWaiting(true, $"Đang chờ đối thủ · cổng {PortBox.Text}");
             await _network.HostAsync(int.Parse(PortBox.Text), NicknameBox.Text, _roomCancellation.Token);
             SetWaiting(false, "Đối thủ đã kết nối · chờ xác nhận");
         }
         catch (OperationCanceledException) { SetWaiting(false, "Đã hủy tạo phòng"); }
+        catch (SocketException ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ExplainSocketError(ex), "Không thể tạo phòng"); }
         catch (Exception ex) { SetWaiting(false, "Không tạo được phòng"); MessageBox.Show(ex.Message, "Không thể tạo phòng"); }
     }
     private async void Join_Click(object sender, RoutedEventArgs e)
     {
         try { SetWaiting(true, "Đang kết nối máy chủ…"); _network = CreateNetwork(); _isHost = false; await _network.JoinAsync(HostBox.Text, int.Parse(PortBox.Text), NicknameBox.Text); SetWaiting(false, "Đã kết nối · chờ thông tin ván"); }
+        catch (SocketException ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ExplainSocketError(ex), "Không thể kết nối"); }
         catch (Exception ex) { SetWaiting(false, "Kết nối thất bại"); MessageBox.Show(ex.Message, "Không thể kết nối"); }
     }
+    private static string[] GetLanIpv4Addresses() => NetworkInterface.GetAllNetworkInterfaces()
+        .Where(adapter => adapter.OperationalStatus == OperationalStatus.Up && adapter.NetworkInterfaceType is NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.Ethernet)
+        .SelectMany(adapter => adapter.GetIPProperties().UnicastAddresses)
+        .Select(info => info.Address)
+        .Where(address => address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address) && !address.ToString().StartsWith("169.254.", StringComparison.Ordinal))
+        .Distinct()
+        .Select(address => address.ToString())
+        .ToArray();
+    private static string ExplainSocketError(SocketException ex) => ex.SocketErrorCode switch
+    {
+        SocketError.AddressAlreadyInUse => $"Cổng TCP đã được dùng. Hãy đổi cổng khác.\n\n{ex.Message}",
+        SocketError.ConnectionRefused => $"Máy chủ từ chối kết nối. Kiểm tra máy kia đã bấm Tạo phòng và hai bên dùng cùng cổng chưa.\n\n{ex.Message}",
+        SocketError.TimedOut => $"Kết nối hết thời gian chờ. Kiểm tra IP LAN, Windows Firewall và chế độ cô lập thiết bị Wi‑Fi (AP/client isolation).\n\n{ex.Message}",
+        SocketError.NetworkUnreachable or SocketError.HostUnreachable => $"Không tới được máy chủ. Hai máy cần nằm trong mạng có thể liên lạc trực tiếp.\n\n{ex.Message}",
+        _ => ex.Message
+    };
     private void Cancel_Click(object sender, RoutedEventArgs e) { _roomCancellation?.Cancel(); _ = _network?.DisposeAsync(); }
     private void SetWaiting(bool waiting, string text)
     {
@@ -72,13 +99,15 @@ public partial class MainWindow : Window
     {
         if (m.Command == "HELLO" && _isHost)
         {
+            _blackPerspective=false;
             _sessionId = _network!.SessionId;
             await _network.SendAsync(new NetworkMessage { Command="WELCOME", SessionId=_sessionId, Name=NicknameBox.Text, Fen=_rules.Fen });
             StatusText.Text = $"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
         }
         if (m.Command == "WELCOME" && !_isHost && !string.IsNullOrWhiteSpace(m.SessionId))
         {
-            _sessionId=m.SessionId; _rules.Load(m.Fen); _sequence=0; _waitingForState=false;
+            _blackPerspective=true; _sessionId=m.SessionId; _rules.Load(m.Fen); _sequence=0; _waitingForState=false;
+            UpdateCoordinates();
             StatusText.Text=$"Đang đấu với {m.Name} · lượt Trắng"; DrawBoard(); return;
         }
         if (m.Command == "MOVE" && _isHost && m.Sequence == _sequence + 1)
@@ -147,13 +176,16 @@ public partial class MainWindow : Window
     private void DrawBoard()
     {
         Board.Children.Clear();
+        UpdateCoordinates();
         var kingToTilt = _gameOver && _rules.IsCheckmate ? FindKingSquare(_rules.Game.WhoseTurn) : null;
         var kingInCheck = _rules.Game.IsInCheck(_rules.Game.WhoseTurn)
             ? FindKingSquare(_rules.Game.WhoseTurn)
             : null;
         for(int row=0;row<8;row++) for(int col=0;col<8;col++)
         {
-            var file=(char)('a'+col); var rank=8-row; var square=$"{file}{rank}";
+            var file=_blackPerspective ? (char)('h'-col) : (char)('a'+col);
+            var rank=_blackPerspective ? row+1 : 8-row;
+            var square=$"{file}{rank}";
             var piece=_rules.Game.GetPieceAt(new Position(square));
             var content = new Grid();
             if (_legalTargets.Contains(square))
@@ -179,13 +211,21 @@ public partial class MainWindow : Window
                 if (square == kingToTilt) { visual.RenderTransform = new RotateTransform(90); visual.RenderTransformOrigin = new Point(0.5,0.5); }
                 content.Children.Add(visual);
             }
-            var lightSquare=(row+col)%2==0;
+            var lightSquare=((file-'a')+rank)%2==0;
             var squareColor=lightSquare?Color.FromRgb(238,238,210):Color.FromRgb(118,150,86);
             var background=square==kingInCheck
                 ? new SolidColorBrush(Color.FromRgb(205,72,67))
                 : _selected==square ? new SolidColorBrush(Color.FromRgb(246,225,95)) : new SolidColorBrush(squareColor);
             var b=new Button{Style=(Style)FindResource("SquareButton"),Content=content,Padding=new Thickness(0),BorderThickness=new Thickness(0),Background=background,Tag=square};
             b.Click+=Square_Click; Board.Children.Add(b);
+        }
+    }
+    private void UpdateCoordinates()
+    {
+        for (var i=0;i<8;i++)
+        {
+            ((TextBlock)RankCoordinates.Children[i]).Text=(_blackPerspective ? i+1 : 8-i).ToString();
+            ((TextBlock)FileCoordinates.Children[i]).Text=((char)(_blackPerspective ? 'h'-i : 'a'+i)).ToString();
         }
     }
     private async void Square_Click(object sender,RoutedEventArgs e)
