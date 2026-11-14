@@ -130,7 +130,13 @@ public partial class MainWindow : Window
     private void ShowGameOver(string result)
     {
         if (_gameOver) return;
-        _gameOver=true; MessageBox.Show(this,result,"Kết thúc ván",MessageBoxButton.OK,MessageBoxImage.Information);
+        _gameOver=true;
+        var isCheckmate=result.StartsWith("Chiếu hết",StringComparison.Ordinal);
+        GameResultLabel.Text=isCheckmate ? "CHECKMATE" : "HÒA CỜ";
+        GameResultLabel.Foreground=new SolidColorBrush(isCheckmate ? Color.FromRgb(235,112,94) : Color.FromRgb(129,182,76));
+        var winner=result.Contains("Đen thắng",StringComparison.Ordinal) ? "Đen thắng" : result.Contains("Trắng thắng",StringComparison.Ordinal) ? "Trắng thắng" : "Hòa cờ";
+        StatusText.Text=isCheckmate ? $"CHECKMATE · {winner}" : result;
+        StatusDot.Fill=new SolidColorBrush(isCheckmate ? Color.FromRgb(235,112,94) : Color.FromRgb(129,182,76));
     }
     private void DrawBoard()
     {
