@@ -54,6 +54,14 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private bool _waitingForOpponent;
     private bool _connectionPending;
+    private readonly HashSet<string> _animatingDestinations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<AnimatedPieceVisual> _movingVisuals = new();
+    private int _moveAnimationVersion;
+    private bool _moveAnimating;
+    private long _moveAnimationStartedAt;
+
+    private sealed record AnimatedPieceMove(string From, string To, char Piece);
+    private sealed record AnimatedPieceVisual(FrameworkElement Visual, double StartX, double StartY, double DeltaX, double DeltaY);
     public MainWindow()
     {
         InitializeComponent();
@@ -98,6 +106,7 @@ public partial class MainWindow : Window
     }
     private async Task ResetForNewSessionAsync(bool whitePerspective)
     {
+        CancelMoveAnimation();
         _gameStarted=false; _gameOver=false; _waitingForState=false; _clockRunning=false; _waitingForOpponent=false; _connectionPending=false;
         _selected=null; _legalTargets.Clear(); _sessionId=""; _sequence=0; _lastMoveFrom=null; _lastMoveTo=null;
         var previousNetwork=_network;
@@ -212,6 +221,7 @@ public partial class MainWindow : Window
             if (m.SessionId != _sessionId) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Sai phiên chơi."}); return; }
             var isCapture = IsCapture(m.From, m.To);
             var isCastling = IsCastling(m.From, m.To);
+            var animatedPiece = _rules.Game.GetPieceAt(new Position(m.From))?.GetFenCharacter() ?? '\0';
             UpdateHostClock();
             if (_blackMilliseconds<=0) { await FinishHostGameAsync("Hết giờ · Trắng thắng"); return; }
             if (_gameOver || _rules.Game.WhoseTurn != Player.Black || !_rules.Move(m.From,m.To,m.Promotion)) { _ = _network!.SendAsync(new NetworkMessage{Command="ERROR",Text="Nước đi không hợp lệ hoặc chưa đến lượt Đen."}); return; }
@@ -225,12 +235,14 @@ public partial class MainWindow : Window
             UpdateTurnStatus(result);
             if (string.IsNullOrEmpty(result)) PlayMoveSound(isCapture, isCastling);
             if (!string.IsNullOrEmpty(result)) _clockRunning=false;
-            DrawBoard(); await BroadcastStateAsync(moveText,result,isCapture,isCastling,m.From,m.To);
+            AnimateMove(m.From,m.To,animatedPiece,isCastling); await BroadcastStateAsync(moveText,result,isCapture,isCastling,m.From,m.To);
             if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
             return;
         }
         if (m.Command == "STATE" && !_isHost && m.SessionId == _sessionId && m.Sequence == _sequence + 1)
         {
+            var animatedPiece = _rules.Game.GetPieceAt(new Position(m.From))?.GetFenCharacter() ?? '\0';
+            var isCastling = IsCastling(m.From,m.To);
             _sequence=m.Sequence; _rules.Load(m.Fen); _waitingForState=false; _selected=null; _legalTargets.Clear();
             _lastMoveFrom=m.From;
             _lastMoveTo=m.To;
@@ -238,7 +250,7 @@ public partial class MainWindow : Window
             AppendMoveHistory(_sequence,m.MoveText);
             UpdateTurnStatus(m.Result);
             if (string.IsNullOrEmpty(m.Result)) PlayMoveSound(m.IsCapture, m.IsCastling);
-            DrawBoard();
+            AnimateMove(m.From,m.To,animatedPiece,isCastling);
             if (!string.IsNullOrEmpty(m.Result)) ShowGameOver(m.Result);
         }
         if (m.Command == "ERROR") { _waitingForState=false; _selected=null; _legalTargets.Clear(); DrawBoard(); MessageBox.Show(m.Text,"Nước đi bị từ chối"); }
@@ -405,7 +417,7 @@ public partial class MainWindow : Window
         ResultBanner.BorderBrush=new SolidColorBrush(isDraw ? Color.FromRgb(129,182,76) : Color.FromRgb(235,112,94));
         ResultBanner.Visibility=Visibility.Visible;
         RefreshActionControls();
-        if (_losingPlayer.HasValue || bareKings) DrawBoard();
+        if ((_losingPlayer.HasValue || bareKings) && !_moveAnimating) DrawBoard();
     }
     private void DrawBoard()
     {
@@ -436,7 +448,7 @@ public partial class MainWindow : Window
                     IsHitTestVisible=false
                 });
             }
-            if (piece is not null)
+            if (piece is not null && !_animatingDestinations.Contains(square))
             {
                 var visual = new ChessPieceVisual(piece.GetFenCharacter())
                 {
@@ -462,6 +474,119 @@ public partial class MainWindow : Window
             b.Click+=Square_Click; Board.Children.Add(b);
         }
     }
+
+    private void AnimateMove(string from, string to, char piece, bool isCastling)
+    {
+        CancelMoveAnimation();
+        if (piece == '\0' || !TryGetBoardCell(from, out _, out _) || !TryGetBoardCell(to, out _, out _))
+        {
+            DrawBoard();
+            return;
+        }
+
+        var moves = new List<AnimatedPieceMove> { new(from, to, piece) };
+        if (isCastling && char.ToLowerInvariant(piece) == 'k')
+        {
+            var rank = from[1];
+            var kingSide = to[0] > from[0];
+            moves.Add(new AnimatedPieceMove(
+                kingSide ? $"h{rank}" : $"a{rank}",
+                kingSide ? $"f{rank}" : $"d{rank}",
+                char.IsUpper(piece) ? 'R' : 'r'));
+        }
+
+        foreach (var move in moves) _animatingDestinations.Add(move.To);
+        _moveAnimating = true;
+        DrawBoard();
+
+        var cellWidth = Board.ActualWidth / 8;
+        var cellHeight = Board.ActualHeight / 8;
+        var pieceSize = Math.Min(cellWidth, cellHeight) * 0.82;
+        if (cellWidth <= 0 || cellHeight <= 0 || pieceSize <= 0)
+        {
+            FinishMoveAnimation(++_moveAnimationVersion);
+            return;
+        }
+
+        var animationVersion = ++_moveAnimationVersion;
+        _movingVisuals.Clear();
+        foreach (var move in moves)
+        {
+            if (!TryGetBoardCell(move.From, out var fromColumn, out var fromRow)
+                || !TryGetBoardCell(move.To, out var toColumn, out var toRow))
+            {
+                FinishMoveAnimation(animationVersion);
+                return;
+            }
+
+            var visual = new ChessPieceVisual(move.Piece)
+            {
+                Width = pieceSize,
+                Height = pieceSize,
+                IsHitTestVisible = false
+            };
+            var startX = fromColumn * cellWidth + (cellWidth - pieceSize) / 2;
+            var startY = fromRow * cellHeight + (cellHeight - pieceSize) / 2;
+            var deltaX = (toColumn - fromColumn) * cellWidth;
+            var deltaY = (toRow - fromRow) * cellHeight;
+            Canvas.SetLeft(visual, startX);
+            Canvas.SetTop(visual, startY);
+            BoardAnimationLayer.Children.Add(visual);
+            _movingVisuals.Add(new AnimatedPieceVisual(visual, startX, startY, deltaX, deltaY));
+        }
+
+        // Give the moving piece visuals a real source-square layout before the first render tick.
+        BoardAnimationLayer.UpdateLayout();
+        _moveAnimationStartedAt = Stopwatch.GetTimestamp();
+        CompositionTarget.Rendering += MoveAnimation_Rendering;
+    }
+
+    private void MoveAnimation_Rendering(object? sender, EventArgs e)
+    {
+        if (!_moveAnimating) return;
+        const double durationMilliseconds = 320;
+        var progress = Math.Clamp(Stopwatch.GetElapsedTime(_moveAnimationStartedAt).TotalMilliseconds / durationMilliseconds, 0, 1);
+        var easedProgress = progress * progress * (3 - 2 * progress);
+        foreach (var movingPiece in _movingVisuals)
+        {
+            Canvas.SetLeft(movingPiece.Visual, movingPiece.StartX + movingPiece.DeltaX * easedProgress);
+            Canvas.SetTop(movingPiece.Visual, movingPiece.StartY + movingPiece.DeltaY * easedProgress);
+        }
+        if (progress >= 1) FinishMoveAnimation(_moveAnimationVersion);
+    }
+
+    private bool TryGetBoardCell(string square, out int column, out int row)
+    {
+        column = row = 0;
+        if (square.Length != 2 || square[0] is < 'a' or > 'h' || square[1] is < '1' or > '8') return false;
+        var file = square[0] - 'a';
+        var rank = square[1] - '1';
+        column = _blackPerspective ? 7 - file : file;
+        row = _blackPerspective ? rank : 7 - rank;
+        return true;
+    }
+
+    private void FinishMoveAnimation(int animationVersion)
+    {
+        if (animationVersion != _moveAnimationVersion) return;
+        CompositionTarget.Rendering -= MoveAnimation_Rendering;
+        BoardAnimationLayer.Children.Clear();
+        _movingVisuals.Clear();
+        _animatingDestinations.Clear();
+        _moveAnimating = false;
+        DrawBoard();
+    }
+
+    private void CancelMoveAnimation()
+    {
+        _moveAnimationVersion++;
+        CompositionTarget.Rendering -= MoveAnimation_Rendering;
+        BoardAnimationLayer.Children.Clear();
+        _movingVisuals.Clear();
+        _animatingDestinations.Clear();
+        _moveAnimating = false;
+    }
+
     private void UpdateCoordinates()
     {
         for (var i=0;i<8;i++)
@@ -472,7 +597,7 @@ public partial class MainWindow : Window
     }
     private async void Square_Click(object sender,RoutedEventArgs e)
     {
-        if (!_gameStarted || _waitingForState || _gameOver) return;
+        if (!_gameStarted || _waitingForState || _gameOver || _moveAnimating) return;
         var square=(string)((Button)sender).Tag;
         var localColor=_isHost ? Player.White : Player.Black;
         if (_network is null || _rules.Game.WhoseTurn != localColor) return;
@@ -492,6 +617,7 @@ public partial class MainWindow : Window
 
         var from=_selected;
         var movingPiece=_rules.Game.GetPieceAt(new Position(from));
+        var animatedPiece = movingPiece?.GetFenCharacter() ?? '\0';
         var isCapture=IsCapture(from,square);
         var isCastling=IsCastling(from,square);
         var isPromotion=movingPiece is not null && (movingPiece.GetFenCharacter() is 'P' or 'p') && (square.EndsWith('8') || square.EndsWith('1'));
@@ -515,7 +641,7 @@ public partial class MainWindow : Window
             var moveText=FormatMove(from,square,result);
             AppendMoveHistory(_sequence,moveText); UpdateTurnStatus(result);
             if (string.IsNullOrEmpty(result)) PlayMoveSound(isCapture, isCastling);
-            DrawBoard();
+            AnimateMove(from,square,animatedPiece,isCastling);
             if (!string.IsNullOrEmpty(result)) _clockRunning=false;
             await BroadcastStateAsync(moveText,result,isCapture,isCastling,from,square);
             if (!string.IsNullOrEmpty(result)) ShowGameOver(result);
